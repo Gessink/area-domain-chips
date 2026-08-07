@@ -15,6 +15,7 @@ Designed for the **badge region** of a dashboard view (one config renders the wh
 - **Two-line layout** matching Home Assistant's own badges: the name on top, `3 on` below, same font sizes and height
 - Names and state words come from **Home Assistant's own translations**, pluralised, so `binary_sensor` + `window` reads "Ramen / 2 open" on a Dutch instance
 - Count what is **inactive** too, for chips like "4 covers closed"
+- **Keyword filtering** to drop the odd entity that should not be counted
 - Colours use HA's **`ui_color` picker**, including `state` for the domain's own active colour
 - Tap opens an **entity list with real controls**: toggles for lights, switches and fans, open/stop/close for covers, lock/unlock, vacuum start/return, plus bulk buttons like turn everything on or off
 - **Redundant groups are skipped**: a light group whose members are all counted anyway does not inflate the number, with a hard `groups: exclude` switch when you never want groups at all
@@ -104,9 +105,13 @@ views:
 | `show_state_text` | boolean | `true` | Append the translated state word after the count (`3 on` instead of `3`). |
 | `pluralize` | boolean | `true` | Use plural names. See [Naming](#naming). |
 | `show_area_name` | boolean | `false` | Append the area name when exactly one area is selected. |
-| `color_name` | boolean | `true` | Draw the name line in the chip colour, like a Mushroom badge. |
+| `color_name` | boolean | `false` | Draw the name line in the chip colour instead of the normal text colour. |
+| `exclude_keywords` | list | `[]` | Skip entities whose id or friendly name contains any of these, case-insensitive. |
+| `include_keywords` | list | `[]` | Only count entities whose id or friendly name contains one of these. |
 | `icon_tint` | boolean | `false` | Put a tinted circle behind the icon. Off matches the standard HA badge. |
-| `groups` | `auto` \| `exclude` \| `include` | `auto` | How to treat group entities. See [Groups](#groups). |
+| `groups` | `auto` \| `strict` \| `exclude` \| `include` | `auto` | How to treat group entities. See [Groups](#groups). |
+| `bulk_actions` | `all` \| `off` \| `none` | `all` | Which bulk buttons the entity list gets. `off` drops the "all on" / "open all" side. |
+| `debug` | boolean | `false` | Log to the browser console why group entities are counted or skipped. |
 | `exclude_areas` | list | `[]` | Area ids to always skip. |
 | `exclude_entities` | list | `[]` | Entity ids to always skip. |
 | `include_hidden` | boolean | `false` | Also count entities hidden in the registry. |
@@ -125,6 +130,8 @@ views:
 | `label` / `labels` | string / list | – | Match on label. Entity, device and area labels all count. |
 | `label_match` | `any` \| `all` | `any` | Whether one or every label must match. |
 | `areas` | list | – | Override the top-level `areas` for this chip only. |
+| `exclude_keywords` | list | – | Extra keywords to skip, on top of the card-level list. |
+| `include_keywords` | list | – | Replaces the card-level include list for this chip. |
 | `entities` | list | – | Restrict the chip to these entity ids. |
 | `name` | string | translated | Empty means the translated device class name, or the domain name. |
 | `icon` | string | entity icon | Empty means the icon of the first matching entity. |
@@ -138,6 +145,7 @@ views:
 | `active_states` | list | per domain | Override which states count as active. The first entry is also the word shown after the count. |
 | `inactive_states` | list | – | Inverse of `active_states`: everything else counts as active. |
 | `list_scope` | string | inherits | Override the top-level setting for this chip. |
+| `bulk_actions` | string | inherits | Override the top-level setting for this chip. |
 
 If every chip is hidden, the whole element hides itself, so it leaves no empty gap in the badge row.
 
@@ -154,6 +162,21 @@ With no `name`, a chip asks Home Assistant for the translation, so the same conf
 | `domain: vacuum` | Vacuums / 1 cleaning | Stofzuigers / 1 bezig met stofzuigen |
 
 Home Assistant only ships singular names, so the plural is added here. English follows the regular rules. Dutch is too irregular for that, so the words Home Assistant actually produces for domains and device classes are held in a list; anything not in it stays singular. Every other language stays singular as well. Set `pluralize: false` to switch it off, or give the chip a `name` to decide for yourself. Corrections and additions to the Dutch list are welcome.
+
+### Keyword filtering
+
+Some entities just do not belong in a count: a Christmas tree among the lights, a test switch, a debug sensor. `exclude_keywords` drops anything whose entity id or friendly name contains one of the words, case-insensitive and matched as a plain substring.
+
+```yaml
+type: custom:area-domain-chips
+areas: [living_room]
+exclude_keywords: [kerst, test]     # applies to every chip
+chips:
+  - domain: light
+    exclude_keywords: [nachtlamp]   # only this chip, on top of the list above
+```
+
+`include_keywords` works the other way round and keeps only what matches. A chip-level include list replaces the card-level one, so a single chip can opt out of the card-wide narrowing.
 
 ### Colours
 
@@ -178,7 +201,9 @@ The default tap action opens a dialog listing the entities behind the chip, with
 | `vacuum` | Start / return to base |
 | everything else | Read-only; clicking the row opens more-info |
 
-Above the list sit bulk buttons: turn everything on or off for toggleable domains, open or close everything for covers, lock everything for locks.
+Above the list sit bulk buttons that act on every entity in it: on and off for toggleable domains, open and close for covers and valves, lock for locks, return to base for vacuums. Each label carries the number it will act on, so a cover chip listing twelve covers shows `Open (12)` and `Close (12)`.
+
+`bulk_actions: off` keeps only the off / close button, for chips where turning everything on is not something you want one tap away. `bulk_actions: none` removes the row. Both can be set per chip.
 
 `list_scope` decides which entities are listed:
 
@@ -212,11 +237,14 @@ Group helpers expose their members in the `entity_id` attribute. `groups` decide
 
 | Value | Behaviour |
 | --- | --- |
-| `auto` (default) | Drop a group when every member is already accounted for, so an "All living room lights" group next to its own three bulbs reports `3 on` rather than `4 on`. |
+| `auto` (default) | Drop a group as soon as **one** member is counted separately, because from that point on the group is double counting. A house-wide "All lights" group disappears from a living-room chip the moment one living-room lamp is counted. |
+| `strict` | Drop a group only when **every** member is counted separately. Keeps house-wide groups visible in an area chip. |
 | `exclude` | Never count any group entity. |
 | `include` | Count groups like any other entity. |
 
-Under `auto` a member counts as accounted for when it is matched by the same chip, when it no longer exists, or when it has no area of its own — that last case covers the common setup where the group carries the area and its members do not. A group that genuinely reaches outside the chip's scope is kept, because its members are not represented otherwise. If a group keeps showing up and you want it gone regardless, use `groups: exclude`.
+A member counts as counted separately when the same chip matches it, or when it has no area of its own — that second case covers the common setup where the group carries the area and its members do not. A group whose members are all hidden, or that no longer exist, is kept under `auto`, because then nothing else represents it; use `groups: exclude` to get rid of those too.
+
+Not sure why a particular group survives? Set `debug: true` and open the browser console: every group decision is logged with the members it found.
 
 ### Active-state detection
 

@@ -12,7 +12,7 @@
  * https://github.com/Gessink/area-domain-chips
  */
 
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 
 /* ------------------------------------------------------------------ *
  * State helpers
@@ -428,6 +428,8 @@ class AreaDomainChips extends HTMLElement {
     this._config = Object.assign(
       {
         areas: [],
+        bulk_actions: "all",
+        debug: false,
         exclude_areas: [],
         exclude_entities: [],
         groups: "auto",
@@ -435,8 +437,10 @@ class AreaDomainChips extends HTMLElement {
         include_diagnostic: false,
         layout: "stacked",
         pluralize: true,
-        color_name: true,
+        color_name: false,
         icon_tint: false,
+        exclude_keywords: [],
+        include_keywords: [],
         show_state_text: true,
         show_area_name: false,
         spacing: 8,
@@ -570,6 +574,23 @@ class AreaDomainChips extends HTMLElement {
       if (!match) return false;
     }
 
+    // Keywords, matched case-insensitively against the entity id and the
+    // friendly name. Card-level and chip-level exclusions add up; a chip-level
+    // include list replaces the card-level one.
+    const excludeWords = asArray(cfg.exclude_keywords).concat(asArray(chip.exclude_keywords));
+    const includeWords = asArray(chip.include_keywords).length
+      ? asArray(chip.include_keywords)
+      : asArray(cfg.include_keywords);
+
+    if (excludeWords.length || includeWords.length) {
+      const name = (stateObj.attributes && stateObj.attributes.friendly_name) || "";
+      const haystack = `${entityId} ${name}`.toLowerCase();
+      const hit = (word) => haystack.includes(String(word).toLowerCase());
+
+      if (excludeWords.some(hit)) return false;
+      if (includeWords.length && !includeWords.some(hit)) return false;
+    }
+
     // Optional explicit entity whitelist
     const only = asArray(chip.entities);
     if (only.length && !only.includes(entityId)) return false;
@@ -621,8 +642,25 @@ class AreaDomainChips extends HTMLElement {
         index[c] = ids.filter((id) => {
           const members = groupMembers(hass.states[id]);
           if (!members || !members.length) return true;
-          if (groups === "exclude") return false;
-          return !members.every((m) => this._memberRepresented(chips[c], m, present));
+
+          if (groups === "exclude") {
+            this._debug(c, id, "dropped: groups is set to exclude");
+            return false;
+          }
+
+          const counted = members.filter((m) => this._memberCounted(chips[c], m, present));
+          const drop = groups === "strict"
+            ? members.every((m) => this._memberNotBlocking(chips[c], m, present))
+            : counted.length > 0;
+
+          this._debug(
+            c,
+            id,
+            `${drop ? "dropped" : "kept"}: group of ${members.length}, ` +
+              `${counted.length} member(s) counted separately` +
+              (drop ? "" : ` (${members.filter((m) => !this._memberCounted(chips[c], m, present)).slice(0, 5).join(", ")})`)
+          );
+          return !drop;
         });
       }
     }
@@ -631,19 +669,30 @@ class AreaDomainChips extends HTMLElement {
     this._indexKey = this._registryKey(hass);
   }
 
-  // Is this group member already accounted for, so the group itself is
-  // redundant? Besides members that are counted directly, this covers the
-  // common setup where the group carries the area and its members have none of
-  // their own, and members that no longer exist.
-  _memberRepresented(chip, memberId, present) {
+  // Is this member counted in its own right, making the group double count?
+  // Besides members in the candidate list this covers the common setup where
+  // the group carries the area and its members have none of their own.
+  _memberCounted(chip, memberId, present) {
     if (present.has(memberId)) return true;
 
     const hass = this._hass;
     const stateObj = hass.states[memberId];
-    if (!stateObj) return true;
+    if (!stateObj) return false;
 
     if (entityAreaId(hass, memberId)) return false;
     return this._chipMatches(chip, memberId, stateObj, true);
+  }
+
+  // For `groups: strict`: a member that no longer exists should not keep an
+  // otherwise redundant group alive.
+  _memberNotBlocking(chip, memberId, present) {
+    if (!this._hass.states[memberId]) return true;
+    return this._memberCounted(chip, memberId, present);
+  }
+
+  _debug(chipIndex, entityId, message) {
+    if (!this._config.debug) return;
+    console.info(`[area-domain-chips] chip ${chipIndex} · ${entityId}: ${message}`);
   }
 
   _candidates(chipIndex) {
@@ -741,7 +790,7 @@ class AreaDomainChips extends HTMLElement {
       el.appendChild(labels);
 
       if (this._config.icon_tint) el.classList.add("tinted");
-      if (this._config.color_name === false) el.classList.add("plain-name");
+      if (this._config.color_name) el.classList.add("colored-name");
 
       this._attachActions(el, i);
       wrap.appendChild(el);
@@ -1004,50 +1053,44 @@ class AreaDomainChips extends HTMLElement {
     return { el: row, update };
   }
 
+  // Bulk buttons act on every entity in the list, so the count is part of the
+  // label: no translation needed to make "acts on all of them" obvious.
   _bulkButtons(chipIndex, ids) {
     const hass = this._hass;
-    const domain = this._chipDomain(this._config.chips[chipIndex]);
+    const chip = this._config.chips[chipIndex];
+    const domain = this._chipDomain(chip);
     const kind = controlKind(domain);
     const out = [];
     if (!ids.length) return out;
 
+    const setting = chip.bulk_actions !== undefined ? chip.bulk_actions : this._config.bulk_actions;
+    const mode = setting === undefined ? "all" : setting === false ? "none" : setting === true ? "all" : setting;
+    if (mode === "none") return out;
+    const wantOn = mode === "all";
+
+    const add = (icon, label, service, serviceDomain) => {
+      out.push(
+        this._textButton(icon, `${label} (${ids.length})`, () =>
+          this._call(serviceDomain, service, ids)
+        )
+      );
+    };
+
     if (kind === "toggle") {
-      const onWord = stateName(hass, domain, undefined, "on");
-      const offWord = stateName(hass, domain, undefined, "off");
-      out.push(
-        this._textButton("mdi:flash", tr(hass, "ui.card.common.turn_on") || onWord, () =>
-          this._call("homeassistant", "turn_on", ids)
-        )
-      );
-      out.push(
-        this._textButton("mdi:flash-off", tr(hass, "ui.card.common.turn_off") || offWord, () =>
-          this._call("homeassistant", "turn_off", ids)
-        )
-      );
+      if (wantOn) {
+        add("mdi:flash", tr(hass, "ui.card.common.turn_on") || stateName(hass, domain, undefined, "on"), "turn_on", "homeassistant");
+      }
+      add("mdi:flash-off", tr(hass, "ui.card.common.turn_off") || stateName(hass, domain, undefined, "off"), "turn_off", "homeassistant");
     } else if (kind === "position") {
       const svc = domain === "valve" ? "valve" : "cover";
-      out.push(
-        this._textButton("mdi:arrow-up", tr(hass, "ui.card.cover.open_cover") || "Open", () =>
-          this._call(svc, domain === "valve" ? "open_valve" : "open_cover", ids)
-        )
-      );
-      out.push(
-        this._textButton("mdi:arrow-down", tr(hass, "ui.card.cover.close_cover") || "Close", () =>
-          this._call(svc, domain === "valve" ? "close_valve" : "close_cover", ids)
-        )
-      );
+      if (wantOn) {
+        add("mdi:arrow-up", tr(hass, "ui.card.cover.open_cover") || "Open", domain === "valve" ? "open_valve" : "open_cover", svc);
+      }
+      add("mdi:arrow-down", tr(hass, "ui.card.cover.close_cover") || "Close", domain === "valve" ? "close_valve" : "close_cover", svc);
     } else if (kind === "lock") {
-      out.push(
-        this._textButton("mdi:lock", tr(hass, "ui.card.lock.lock") || "Lock", () =>
-          this._call("lock", "lock", ids)
-        )
-      );
+      add("mdi:lock", tr(hass, "ui.card.lock.lock") || "Lock", "lock", "lock");
     } else if (kind === "vacuum") {
-      out.push(
-        this._textButton("mdi:home-map-marker", tr(hass, "ui.card.vacuum.actions.return_to_base") || "Return to base", () =>
-          this._call("vacuum", "return_to_base", ids)
-        )
-      );
+      add("mdi:home-map-marker", tr(hass, "ui.card.vacuum.actions.return_to_base") || "Return to base", "return_to_base", "vacuum");
     }
     return out;
   }
@@ -1298,9 +1341,9 @@ const STYLES = `
     font-weight: 500;
     line-height: 10px;
     letter-spacing: 0.1px;
-    color: var(--adc-color, var(--secondary-text-color));
+    color: var(--primary-text-color);
   }
-  .chip.plain-name .name { color: var(--secondary-text-color); }
+  .chip.colored-name .name { color: var(--adc-color, var(--primary-text-color)); }
   .value {
     font-size: var(--ha-badge-font-size, 12px);
     font-weight: 500;
@@ -1449,15 +1492,32 @@ const GENERAL_SCHEMA = [
       { name: "include_diagnostic", selector: { boolean: {} } },
     ],
   },
+  { name: "exclude_keywords", selector: { text: { multiple: true } } },
+  { name: "include_keywords", selector: { text: { multiple: true } } },
+  { name: "debug", selector: { boolean: {} } },
   {
     name: "groups",
     selector: {
       select: {
         mode: "dropdown",
         options: [
-          { value: "auto", label: "Skip groups whose members are all counted" },
+          { value: "auto", label: "Skip a group as soon as one member is counted" },
+          { value: "strict", label: "Skip a group only when every member is counted" },
           { value: "exclude", label: "Never count groups" },
           { value: "include", label: "Count groups like any other entity" },
+        ],
+      },
+    },
+  },
+  {
+    name: "bulk_actions",
+    selector: {
+      select: {
+        mode: "dropdown",
+        options: [
+          { value: "all", label: "Show both, e.g. all on and all off" },
+          { value: "off", label: "Only the off / close button" },
+          { value: "none", label: "No bulk buttons" },
         ],
       },
     },
@@ -1513,6 +1573,7 @@ const CHIP_SCHEMA = [
   },
   { name: "labels", selector: { label: { multiple: true } } },
   { name: "areas", selector: { area: { multiple: true } } },
+  { name: "exclude_keywords", selector: { text: { multiple: true } } },
   {
     name: "",
     type: "grid",
@@ -1571,9 +1632,13 @@ const LABELS = {
   show_state_text: "Show the state word after the count",
   show_area_name: "Append the area name",
   pluralize: "Use plural names",
-  color_name: "Colour the name line",
+  color_name: "Colour the name line instead of using the text colour",
+  exclude_keywords: "Skip entities whose id or name contains",
+  include_keywords: "Only count entities whose id or name contains",
   icon_tint: "Tinted circle behind the icon",
   groups: "Group entities",
+  bulk_actions: "Bulk buttons in the entity list",
+  debug: "Log why entities are counted or skipped to the console",
   include_hidden: "Include hidden entities",
   include_diagnostic: "Include diagnostic/config entities",
   tap_action: "Tap action",
@@ -1731,9 +1796,13 @@ class AreaDomainChipsEditor extends HTMLElement {
           show_state_text: this._config.show_state_text !== false,
           pluralize: this._config.pluralize !== false,
           show_area_name: !!this._config.show_area_name,
-          color_name: this._config.color_name !== false,
+          color_name: !!this._config.color_name,
           icon_tint: !!this._config.icon_tint,
+          exclude_keywords: this._config.exclude_keywords || [],
+          include_keywords: this._config.include_keywords || [],
           groups: this._config.groups || (this._config.exclude_redundant_groups === false ? "include" : "auto"),
+          bulk_actions: this._config.bulk_actions || "all",
+          debug: !!this._config.debug,
           include_hidden: !!this._config.include_hidden,
           include_diagnostic: !!this._config.include_diagnostic,
           tap_action: (this._config.tap_action || { action: "list" }).action,
@@ -1746,9 +1815,13 @@ class AreaDomainChipsEditor extends HTMLElement {
           this._config.show_state_text = value.show_state_text !== false;
           this._config.pluralize = value.pluralize !== false;
           this._config.show_area_name = value.show_area_name;
-          this._config.color_name = value.color_name !== false;
+          this._config.color_name = !!value.color_name;
           this._config.icon_tint = !!value.icon_tint;
+          this._config.exclude_keywords = value.exclude_keywords || [];
+          this._config.include_keywords = value.include_keywords || [];
           this._config.groups = value.groups || "auto";
+          this._config.bulk_actions = value.bulk_actions || "all";
+          this._config.debug = !!value.debug;
           delete this._config.exclude_redundant_groups;
           this._config.include_hidden = value.include_hidden;
           this._config.include_diagnostic = value.include_diagnostic;
@@ -1836,6 +1909,7 @@ class AreaDomainChipsEditor extends HTMLElement {
             device_class: chip.device_class || "",
             labels: chip.labels || (chip.label ? [chip.label] : []),
             areas: chip.areas || [],
+            exclude_keywords: chip.exclude_keywords || [],
             name: chip.name || "",
             icon: chip.icon || "",
             color: chip.color || "state",
@@ -1850,6 +1924,9 @@ class AreaDomainChipsEditor extends HTMLElement {
             if (value.device_class) next.device_class = value.device_class;
             if (value.labels && value.labels.length) next.labels = value.labels;
             if (value.areas && value.areas.length) next.areas = value.areas;
+            if (value.exclude_keywords && value.exclude_keywords.length) {
+              next.exclude_keywords = value.exclude_keywords;
+            }
             if (value.name) next.name = value.name;
             if (value.icon) next.icon = value.icon;
             if (value.color && value.color !== "state") next.color = value.color;
