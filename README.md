@@ -142,6 +142,7 @@ views:
 | `pluralize` | boolean | inherits | Override the top-level setting for this chip. |
 | `state_text` | string | translated | Force the word after the count. |
 | `mode` | `active` \| `inactive` \| `unavailable` \| `all` | `active` | What to count. |
+| `use_action` | boolean | `true` | For `climate` and `humidifier`, count on `hvac_action` / `action` rather than the mode. See [Active-state detection](#active-state-detection). |
 | `active_states` | list | per domain | Override which states count as active. The first entry is also the word shown after the count. |
 | `inactive_states` | list | – | Inverse of `active_states`: everything else counts as active. |
 | `list_scope` | string | inherits | Override the top-level setting for this chip. |
@@ -257,7 +258,7 @@ Without `active_states`, a chip uses the table below; unlisted domains count any
 | `lock` | `unlocked`, `open`, `opening`, `unlocking` |
 | `vacuum` | `cleaning`, `returning`, `error` |
 | `lawn_mower` | `mowing`, `returning`, `error` |
-| `climate` | `heat`, `cool`, `heat_cool`, `auto`, `dry`, `fan_only` |
+| `climate` | whatever `hvac_action` reports, see below; otherwise `heat`, `cool`, `heat_cool`, `auto`, `dry`, `fan_only` |
 | `media_player` | `playing`, `buffering`, `on` |
 | `alarm_control_panel` | any armed / arming / pending / triggered state |
 | `person`, `device_tracker` | `home` |
@@ -271,6 +272,12 @@ Override it per chip when your setup differs. The first entry doubles as the wor
   icon: mdi:play-circle
   active_states: [playing]
 ```
+
+#### Thermostats and humidifiers
+
+A thermostat set to `auto` or `heat` sits in that state all day, so counting the state would report it as active even while the setpoint is reached and nothing is running. When the integration reports `hvac_action`, that decides instead: the thermostat counts only while it is heating, cooling, drying or preheating, not while it is `idle` or `off`. Humidifiers work the same way through their `action` attribute. Integrations that do not report the attribute fall back to the state.
+
+Set `use_action: false` on the chip to count the mode again, or give the chip explicit `active_states` to bypass both.
 
 `mode: inactive` counts the other side of the same line: everything that is neither active nor unavailable. The word after the count then comes from the domain's inactive state (`closed` for covers, `locked` for locks, `docked` for vacuums, `off` for the rest), or from the first entry of `inactive_states`.
 

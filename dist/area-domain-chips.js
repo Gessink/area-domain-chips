@@ -12,7 +12,7 @@
  * https://github.com/Gessink/area-domain-chips
  */
 
-const VERSION = "1.3.0";
+const VERSION = "1.3.1";
 
 /* ------------------------------------------------------------------ *
  * State helpers
@@ -98,6 +98,14 @@ function inactiveStatesFor(chip, domain) {
   return DOMAIN_INACTIVE_STATES[domain] || ["off"];
 }
 
+// Some domains report what the device is really doing separately from the mode
+// it is set to. A thermostat on `auto` or `heat` sits in that state all day;
+// only hvac_action tells you whether it is actually heating right now.
+const ACTIVITY_ATTRIBUTES = {
+  climate: { attribute: "hvac_action", idle: ["off", "idle"] },
+  humidifier: { attribute: "action", idle: ["off", "idle"] },
+};
+
 function isActive(stateObj, chip) {
   const state = stateObj.state;
   if (UNAVAILABLE.includes(state)) return false;
@@ -110,6 +118,13 @@ function isActive(stateObj, chip) {
   }
 
   const domain = stateObj.entity_id.split(".")[0];
+
+  const activity = ACTIVITY_ATTRIBUTES[domain];
+  if (activity && chip.use_action !== false) {
+    const action = stateObj.attributes ? stateObj.attributes[activity.attribute] : undefined;
+    if (action !== undefined && action !== null) return !activity.idle.includes(action);
+  }
+
   const known = DOMAIN_ACTIVE_STATES[domain];
   if (known) return known.includes(state);
 
@@ -1609,6 +1624,13 @@ const CHIP_SCHEMA = [
     type: "grid",
     schema: [
       { name: "hide_when_zero", selector: { boolean: {} } },
+      { name: "use_action", selector: { boolean: {} } },
+    ],
+  },
+  {
+    name: "",
+    type: "grid",
+    schema: [
       {
         name: "list_scope",
         selector: {
@@ -1651,6 +1673,7 @@ const LABELS = {
   color: "Colour",
   mode: "Count",
   hide_when_zero: "Hide when zero",
+  use_action: "Climate: count only while actually heating or cooling",
   list_scope: "Entity list shows",
 };
 
@@ -1915,6 +1938,7 @@ class AreaDomainChipsEditor extends HTMLElement {
             color: chip.color || "state",
             mode: chip.mode || "active",
             hide_when_zero: chip.hide_when_zero !== false,
+            use_action: chip.use_action !== false,
             list_scope: chip.list_scope || "auto",
           },
           CHIP_SCHEMA,
@@ -1932,6 +1956,7 @@ class AreaDomainChipsEditor extends HTMLElement {
             if (value.color && value.color !== "state") next.color = value.color;
             if (value.mode && value.mode !== "active") next.mode = value.mode;
             next.hide_when_zero = value.hide_when_zero !== false;
+            if (value.use_action === false) next.use_action = false;
             if (value.list_scope && value.list_scope !== "auto") next.list_scope = value.list_scope;
             this._config.chips[i] = next;
             title.textContent = this._chipTitle(next, i);
