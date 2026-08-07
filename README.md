@@ -12,15 +12,16 @@ Designed for the **badge region** of a dashboard view (one config renders the wh
 
 - Pick **one or more areas**, or leave empty for the whole home
 - One chip per **domain + label + device class** combination
-- **Two-line layout** like a Mushroom badge: the name on top, `3 on` below
-- Names and state words come from **Home Assistant's own translations**, so `binary_sensor` + `window` reads "Raam / 2 open" on a Dutch instance
+- **Two-line layout** matching Home Assistant's own badges: the name on top, `3 on` below, same font sizes and height
+- Names and state words come from **Home Assistant's own translations**, pluralised, so `binary_sensor` + `window` reads "Ramen / 2 open" on a Dutch instance
+- Count what is **inactive** too, for chips like "4 covers closed"
 - Colours use HA's **`ui_color` picker**, including `state` for the domain's own active colour
 - Tap opens an **entity list with real controls**: toggles for lights, switches and fans, open/stop/close for covers, lock/unlock, vacuum start/return, plus bulk buttons like turn everything on or off
-- **Redundant groups are skipped**: a light group whose members are all counted anyway does not inflate the number
+- **Redundant groups are skipped**: a light group whose members are all counted anyway does not inflate the number, with a hard `groups: exclude` switch when you never want groups at all
 - Sensible **active-state detection** per domain, overridable per chip
 - **Label filtering** follows Home Assistant semantics: entity labels + device labels + area labels
 - Counts **unavailable** entities too, with `mode: unavailable`
-- Full **visual editor** with area picker, icon picker, colour picker and ready-made presets
+- Full **visual editor** with collapsible chip panels, area picker, icon picker, colour picker and ready-made presets
 - No dependencies, no build step
 
 ## Installation
@@ -101,8 +102,11 @@ views:
 | `chips` | list | `[]` | The chips to render. See below. |
 | `layout` | `stacked` \| `inline` \| `count` | `stacked` | `stacked` puts the name above the count, `inline` renders `3 on Lights`, `count` shows the number only. |
 | `show_state_text` | boolean | `true` | Append the translated state word after the count (`3 on` instead of `3`). |
+| `pluralize` | boolean | `true` | Use plural names. See [Naming](#naming). |
 | `show_area_name` | boolean | `false` | Append the area name when exactly one area is selected. |
-| `exclude_redundant_groups` | boolean | `true` | Skip group-style entities whose members are all counted anyway. |
+| `color_name` | boolean | `true` | Draw the name line in the chip colour, like a Mushroom badge. |
+| `icon_tint` | boolean | `false` | Put a tinted circle behind the icon. Off matches the standard HA badge. |
+| `groups` | `auto` \| `exclude` \| `include` | `auto` | How to treat group entities. See [Groups](#groups). |
 | `exclude_areas` | list | `[]` | Area ids to always skip. |
 | `exclude_entities` | list | `[]` | Entity ids to always skip. |
 | `include_hidden` | boolean | `false` | Also count entities hidden in the registry. |
@@ -128,8 +132,9 @@ views:
 | `hide_when_zero` | boolean | `true` | Hide the chip when the count is zero. |
 | `layout` | string | inherits | Override the top-level `layout` for this chip. |
 | `show_state_text` | boolean | inherits | Override the top-level setting for this chip. |
+| `pluralize` | boolean | inherits | Override the top-level setting for this chip. |
 | `state_text` | string | translated | Force the word after the count. |
-| `mode` | `active` \| `unavailable` \| `all` | `active` | What to count. |
+| `mode` | `active` \| `inactive` \| `unavailable` \| `all` | `active` | What to count. |
 | `active_states` | list | per domain | Override which states count as active. The first entry is also the word shown after the count. |
 | `inactive_states` | list | – | Inverse of `active_states`: everything else counts as active. |
 | `list_scope` | string | inherits | Override the top-level setting for this chip. |
@@ -142,12 +147,13 @@ With no `name`, a chip asks Home Assistant for the translation, so the same conf
 
 | Chip | English | Dutch |
 | --- | --- | --- |
-| `domain: light` | Light / 3 on | Licht / 3 aan |
-| `domain: binary_sensor`, `device_class: window` | Window / 2 open | Raam / 2 open |
-| `domain: cover` | Cover / 1 open | Rolluik / 1 open |
-| `domain: vacuum` | Vacuum / 1 cleaning | Stofzuiger / 1 bezig met stofzuigen |
+| `domain: light` | Lights / 3 on | Lichten / 3 aan |
+| `domain: binary_sensor`, `device_class: window` | Windows / 2 open | Ramen / 2 open |
+| `domain: cover` | Covers / 1 open | Rolluiken / 1 open |
+| `domain: cover`, `mode: inactive` | Covers / 4 closed | Rolluiken / 4 gesloten |
+| `domain: vacuum` | Vacuums / 1 cleaning | Stofzuigers / 1 bezig met stofzuigen |
 
-Home Assistant only ships singular names, so set `name: Windows` yourself if you prefer a plural.
+Home Assistant only ships singular names, so the plural is added here. English follows the regular rules. Dutch is too irregular for that, so the words Home Assistant actually produces for domains and device classes are held in a list; anything not in it stays singular. Every other language stays singular as well. Set `pluralize: false` to switch it off, or give the chip a `name` to decide for yourself. Corrections and additions to the Dutch list are welcome.
 
 ### Colours
 
@@ -200,9 +206,17 @@ hold_action:
   action: turn_off
 ```
 
-### Redundant groups
+### Groups
 
-Group helpers expose their members in the `entity_id` attribute. When every member of such a group is itself counted by the same chip, the group is dropped, so a "All living room lights" group next to its own three bulbs reports `3 on` rather than `4 on`. A group that reaches outside the chip's scope is kept, because its members are not represented otherwise. Set `exclude_redundant_groups: false` to count groups like any other entity.
+Group helpers expose their members in the `entity_id` attribute. `groups` decides what happens to them:
+
+| Value | Behaviour |
+| --- | --- |
+| `auto` (default) | Drop a group when every member is already accounted for, so an "All living room lights" group next to its own three bulbs reports `3 on` rather than `4 on`. |
+| `exclude` | Never count any group entity. |
+| `include` | Count groups like any other entity. |
+
+Under `auto` a member counts as accounted for when it is matched by the same chip, when it no longer exists, or when it has no area of its own — that last case covers the common setup where the group carries the area and its members do not. A group that genuinely reaches outside the chip's scope is kept, because its members are not represented otherwise. If a group keeps showing up and you want it gone regardless, use `groups: exclude`.
 
 ### Active-state detection
 
@@ -230,16 +244,26 @@ Override it per chip when your setup differs. The first entry doubles as the wor
   active_states: [playing]
 ```
 
+`mode: inactive` counts the other side of the same line: everything that is neither active nor unavailable. The word after the count then comes from the domain's inactive state (`closed` for covers, `locked` for locks, `docked` for vacuums, `off` for the rest), or from the first entry of `inactive_states`.
+
+```yaml
+- domain: cover
+  mode: inactive
+  icon: mdi:window-shutter
+  color: grey
+# -> Covers / 4 closed
+```
+
 ## Styling
 
-The chips pick up your theme automatically. To tweak them, use `card_mod` or a theme with these CSS variables on the element:
+The chips reuse Home Assistant's own badge metrics, so they line up with the standard badges next to them: `--ha-badge-size` for the height, `--ha-badge-border-radius`, `--ha-badge-font-size` for the count line, and a 10px name line above it. To tweak them further, use `card_mod` or a theme with these CSS variables on the element:
 
 | Variable | Default |
 | --- | --- |
 | `--adc-gap` | `8px` |
-| `--adc-height` | `36px` (minimum) |
-| `--adc-border-radius` | `20px` |
-| `--adc-background` | `var(--card-background-color)` |
+| `--adc-height` | `var(--ha-badge-size, 36px)` |
+| `--adc-border-radius` | `var(--ha-badge-border-radius, 18px)` |
+| `--adc-background` | `var(--ha-card-background)` |
 | `--adc-border-color` | `var(--ha-card-border-color)` |
 
 ## Notes

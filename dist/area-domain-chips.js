@@ -12,7 +12,7 @@
  * https://github.com/Gessink/area-domain-chips
  */
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 
 /* ------------------------------------------------------------------ *
  * State helpers
@@ -72,9 +72,30 @@ const DOMAIN_ICONS = {
   valve: "mdi:pipe-valve",
 };
 
+// The counterpart of DOMAIN_ACTIVE_STATES, used by `mode: inactive` to pick the
+// word after the count ("4 closed", "2 locked").
+const DOMAIN_INACTIVE_STATES = {
+  alarm_control_panel: ["disarmed"],
+  camera: ["idle"],
+  cover: ["closed"],
+  device_tracker: ["not_home"],
+  lawn_mower: ["docked"],
+  lock: ["locked"],
+  person: ["not_home"],
+  sun: ["below_horizon"],
+  timer: ["idle"],
+  vacuum: ["docked"],
+  valve: ["closed"],
+};
+
 function activeStatesFor(chip, domain) {
   if (Array.isArray(chip.active_states) && chip.active_states.length) return chip.active_states;
   return DOMAIN_ACTIVE_STATES[domain] || ["on"];
+}
+
+function inactiveStatesFor(chip, domain) {
+  if (Array.isArray(chip.inactive_states) && chip.inactive_states.length) return chip.inactive_states;
+  return DOMAIN_INACTIVE_STATES[domain] || ["off"];
 }
 
 function isActive(stateObj, chip) {
@@ -118,8 +139,15 @@ function tr(hass, key) {
   }
 }
 
+// `component.<domain>.title` lives in a translation category the frontend does
+// not always load, while `entity_component` is loaded whenever entities of that
+// domain exist. Ask the reliable one first.
 function domainName(hass, domain) {
-  return tr(hass, `component.${domain}.title`) || domain;
+  return (
+    tr(hass, `component.${domain}.entity_component._.name`) ||
+    tr(hass, `component.${domain}.title`) ||
+    domain
+  );
 }
 
 function deviceClassName(hass, domain, deviceClass) {
@@ -146,6 +174,79 @@ function lowerFirst(hass, text) {
   if (!text) return text;
   const lang = hass && hass.language ? hass.language : undefined;
   return text.charAt(0).toLocaleLowerCase(lang) + text.slice(1);
+}
+
+/* ------------------------------------------------------------------ *
+ * Plurals
+ *
+ * Home Assistant only ships singular names, so a chip that says "Window" has
+ * to be pluralised here. English follows regular rules; Dutch is too irregular
+ * for that, so the words Home Assistant actually produces for domains and
+ * device classes are listed. Anything unknown stays singular, and `name`
+ * always wins.
+ * ------------------------------------------------------------------ */
+
+const PLURALS_NL = {
+  alarmpaneel: "alarmpanelen",
+  apparaat: "apparaten",
+  automatisering: "automatiseringen",
+  batterij: "batterijen",
+  beweging: "bewegingen",
+  "binaire sensor": "binaire sensoren",
+  bevochtiger: "bevochtigers",
+  boiler: "boilers",
+  camera: "camera's",
+  deur: "deuren",
+  garagedeur: "garagedeuren",
+  gordijn: "gordijnen",
+  grasmaaier: "grasmaaiers",
+  klep: "kleppen",
+  knop: "knoppen",
+  lamp: "lampen",
+  licht: "lichten",
+  luchtontvochtiger: "luchtontvochtigers",
+  mediaspeler: "mediaspelers",
+  persoon: "personen",
+  raam: "ramen",
+  rolluik: "rolluiken",
+  schakelaar: "schakelaars",
+  scherm: "schermen",
+  script: "scripts",
+  sensor: "sensoren",
+  sirene: "sirenes",
+  slot: "sloten",
+  stofzuiger: "stofzuigers",
+  stopcontact: "stopcontacten",
+  thermostaat: "thermostaten",
+  update: "updates",
+  ventilator: "ventilatoren",
+  zonwering: "zonweringen",
+};
+
+function pluralEn(word) {
+  if (/(s|x|z|ch|sh)$/.test(word)) return `${word}es`;
+  if (/[^aeiou]y$/.test(word)) return `${word.slice(0, -1)}ies`;
+  return `${word}s`;
+}
+
+function matchCase(source, target) {
+  if (!source || !target) return target;
+  const first = source.charAt(0);
+  if (first !== first.toLowerCase()) return target.charAt(0).toUpperCase() + target.slice(1);
+  return target;
+}
+
+function pluralize(hass, word) {
+  if (!word) return word;
+  const lang = (hass && hass.language) || "en";
+  const key = word.toLocaleLowerCase(lang);
+
+  if (lang.startsWith("nl")) {
+    const known = PLURALS_NL[key];
+    return known ? matchCase(word, known) : word;
+  }
+  if (lang.startsWith("en")) return matchCase(word, pluralEn(key));
+  return word;
 }
 
 /* ------------------------------------------------------------------ *
@@ -259,6 +360,8 @@ const PRESETS = [
   { key: "doors", label: "Doors open", cfg: { domain: "binary_sensor", device_class: "door", icon: "mdi:door-open", color: "red" } },
   { key: "windows", label: "Windows open (binary_sensor)", cfg: { domain: "binary_sensor", device_class: "window", icon: "mdi:window-open-variant", color: "red" } },
   { key: "covers", label: "Covers open", cfg: { domain: "cover", icon: "mdi:window-shutter-open", color: "blue" } },
+  { key: "covers_closed", label: "Covers closed", cfg: { domain: "cover", mode: "inactive", icon: "mdi:window-shutter", color: "grey" } },
+  { key: "lights_off", label: "Lights off", cfg: { domain: "light", mode: "inactive", icon: "mdi:lightbulb-off", color: "grey" } },
   { key: "locks", label: "Locks unlocked", cfg: { domain: "lock", icon: "mdi:lock-open-variant", color: "red" } },
   { key: "motion", label: "Motion detected", cfg: { domain: "binary_sensor", device_class: "motion", icon: "mdi:motion-sensor", color: "orange" } },
   { key: "vacuum", label: "Vacuums running", cfg: { domain: "vacuum", icon: "mdi:robot-vacuum", color: "teal" } },
@@ -327,10 +430,13 @@ class AreaDomainChips extends HTMLElement {
         areas: [],
         exclude_areas: [],
         exclude_entities: [],
-        exclude_redundant_groups: true,
+        groups: "auto",
         include_hidden: false,
         include_diagnostic: false,
         layout: "stacked",
+        pluralize: true,
+        color_name: true,
+        icon_tint: false,
         show_state_text: true,
         show_area_name: false,
         spacing: 8,
@@ -341,6 +447,11 @@ class AreaDomainChips extends HTMLElement {
       config,
       { chips: chips || [] }
     );
+
+    // Pre-1.2 option name.
+    if (config.exclude_redundant_groups === false && config.groups === undefined) {
+      this._config.groups = "include";
+    }
 
     this._index = null;
     this._indexKey = null;
@@ -386,13 +497,18 @@ class AreaDomainChips extends HTMLElement {
     const hass = this._hass;
     const domain = this._chipDomain(chip);
     const deviceClass = this._chipDeviceClass(chip);
-    if (deviceClass) return deviceClassName(hass, domain || "sensor", deviceClass);
-    if (domain) return domainName(hass, domain);
-    if (chip.mode === "unavailable") return stateName(hass, "", "", "unavailable");
-    return tr(hass, "ui.panel.config.entities.caption") || "Entities";
+
+    let name;
+    if (deviceClass) name = deviceClassName(hass, domain || "sensor", deviceClass);
+    else if (domain) name = domainName(hass, domain);
+    else if (chip.mode === "unavailable") return stateName(hass, "", "", "unavailable");
+    else return tr(hass, "ui.panel.config.entities.caption") || "Entities";
+
+    const plural = chip.pluralize !== undefined ? chip.pluralize : this._config.pluralize;
+    return plural ? pluralize(hass, name) : name;
   }
 
-  // The word after the count: "6 open", "3 on".
+  // The word after the count: "6 open", "3 on", "4 closed".
   _chipStateWord(chip) {
     if (chip.state_text !== undefined) return chip.state_text;
     const hass = this._hass;
@@ -403,7 +519,9 @@ class AreaDomainChips extends HTMLElement {
     const domain = this._chipDomain(chip);
     if (!domain) return "";
     const deviceClass = this._chipDeviceClass(chip);
-    const state = activeStatesFor(chip, domain)[0];
+    const state = mode === "inactive"
+      ? inactiveStatesFor(chip, domain)[0]
+      : activeStatesFor(chip, domain)[0];
     return lowerFirst(hass, stateName(hass, domain, deviceClass, state));
   }
 
@@ -413,7 +531,7 @@ class AreaDomainChips extends HTMLElement {
 
   /* -------------------- matching -------------------- */
 
-  _chipMatches(chip, entityId, stateObj) {
+  _chipMatches(chip, entityId, stateObj, ignoreArea) {
     const hass = this._hass;
     const cfg = this._config;
 
@@ -432,13 +550,15 @@ class AreaDomainChips extends HTMLElement {
     }
 
     // Area: a chip may override the card-level areas.
-    const areas = asArray(chip.areas).length ? asArray(chip.areas) : asArray(cfg.areas);
-    const areaId = entityAreaId(hass, entityId);
-    if (areas.length) {
-      if (!areaId || !areas.includes(areaId)) return false;
+    if (!ignoreArea) {
+      const areas = asArray(chip.areas).length ? asArray(chip.areas) : asArray(cfg.areas);
+      const areaId = entityAreaId(hass, entityId);
+      if (areas.length) {
+        if (!areaId || !areas.includes(areaId)) return false;
+      }
+      const excluded = asArray(cfg.exclude_areas);
+      if (excluded.length && areaId && excluded.includes(areaId)) return false;
     }
-    const excluded = asArray(cfg.exclude_areas);
-    if (excluded.length && areaId && excluded.includes(areaId)) return false;
 
     // Labels
     const labels = asArray(chip.labels).concat(asArray(chip.label));
@@ -493,22 +613,37 @@ class AreaDomainChips extends HTMLElement {
       }
     }
 
-    // Drop group-style entities whose children are all counted anyway, so a
-    // light group next to its own bulbs does not inflate the number.
-    if (cfg.exclude_redundant_groups !== false) {
+    const groups = cfg.groups || "auto";
+    if (groups !== "include") {
       for (let c = 0; c < index.length; c++) {
         const ids = index[c];
         const present = new Set(ids);
         index[c] = ids.filter((id) => {
           const members = groupMembers(hass.states[id]);
           if (!members || !members.length) return true;
-          return !members.every((m) => present.has(m));
+          if (groups === "exclude") return false;
+          return !members.every((m) => this._memberRepresented(chips[c], m, present));
         });
       }
     }
 
     this._index = index;
     this._indexKey = this._registryKey(hass);
+  }
+
+  // Is this group member already accounted for, so the group itself is
+  // redundant? Besides members that are counted directly, this covers the
+  // common setup where the group carries the area and its members have none of
+  // their own, and members that no longer exist.
+  _memberRepresented(chip, memberId, present) {
+    if (present.has(memberId)) return true;
+
+    const hass = this._hass;
+    const stateObj = hass.states[memberId];
+    if (!stateObj) return true;
+
+    if (entityAreaId(hass, memberId)) return false;
+    return this._chipMatches(chip, memberId, stateObj, true);
   }
 
   _candidates(chipIndex) {
@@ -525,6 +660,7 @@ class AreaDomainChips extends HTMLElement {
       if (!stateObj) return false;
       if (mode === "all") return true;
       if (mode === "unavailable") return isUnavailable(stateObj);
+      if (mode === "inactive") return !isUnavailable(stateObj) && !isActive(stateObj, chip);
       return isActive(stateObj, chip);
     });
   }
@@ -594,20 +730,23 @@ class AreaDomainChips extends HTMLElement {
 
       const labels = document.createElement("span");
       labels.className = "labels";
-      const primary = document.createElement("span");
-      primary.className = "primary";
-      const secondary = document.createElement("span");
-      secondary.className = "secondary";
-      labels.appendChild(primary);
-      labels.appendChild(secondary);
+      const nameEl = document.createElement("span");
+      nameEl.className = "name";
+      const valueEl = document.createElement("span");
+      valueEl.className = "value";
+      labels.appendChild(nameEl);
+      labels.appendChild(valueEl);
 
       el.appendChild(iconWrap);
       el.appendChild(labels);
 
+      if (this._config.icon_tint) el.classList.add("tinted");
+      if (this._config.color_name === false) el.classList.add("plain-name");
+
       this._attachActions(el, i);
       wrap.appendChild(el);
 
-      return { el, icon, iconWrap, primary, secondary, dynamicIcon };
+      return { el, icon, iconWrap, nameEl, valueEl, dynamicIcon };
     });
 
     this._built = true;
@@ -1057,8 +1196,8 @@ class AreaDomainChips extends HTMLElement {
       anyVisible = true;
 
       const color = this._chipColor(chip);
-      parts.icon.style.color = color;
-      parts.iconWrap.style.background = tintOf(color);
+      parts.el.style.setProperty("--adc-color", color);
+      parts.el.style.setProperty("--adc-tint", tintOf(color));
 
       if (parts.dynamicIcon) {
         const first = matched[i][0] || this._candidates(i)[0];
@@ -1078,14 +1217,14 @@ class AreaDomainChips extends HTMLElement {
       const chipLayout = chip.layout || layout;
 
       if (chipLayout === "count") {
-        parts.primary.textContent = countText;
-        parts.secondary.textContent = "";
+        parts.nameEl.textContent = "";
+        parts.valueEl.textContent = countText;
       } else if (chipLayout === "inline") {
-        parts.primary.textContent = `${countText} ${name}`;
-        parts.secondary.textContent = "";
+        parts.nameEl.textContent = "";
+        parts.valueEl.textContent = `${countText} ${name}`;
       } else {
-        parts.primary.textContent = name;
-        parts.secondary.textContent = countText;
+        parts.nameEl.textContent = name;
+        parts.valueEl.textContent = countText;
       }
 
       parts.el.title = `${name}: ${countText}`;
@@ -1108,45 +1247,67 @@ const STYLES = `
     align-items: center;
     gap: var(--adc-gap, 8px);
   }
+  /* Metrics mirror Home Assistant's own ha-badge so the chips line up with the
+     standard badges in the same row. */
   .chip {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    min-height: var(--adc-height, 36px);
+    height: var(--adc-height, var(--ha-badge-size, 36px));
     box-sizing: border-box;
-    padding: 4px 12px 4px 8px;
-    border-radius: var(--adc-border-radius, 20px);
-    background: var(--adc-background, var(--card-background-color, #fff));
+    padding: 0 12px;
+    border-radius: var(--adc-border-radius, var(--ha-badge-border-radius, calc(var(--ha-badge-size, 36px) / 2)));
+    background: var(--adc-background, var(--ha-card-background, var(--card-background-color, #fff)));
     border: var(--ha-card-border-width, 1px) solid
             var(--adc-border-color, var(--ha-card-border-color, var(--divider-color, #e0e0e0)));
     box-shadow: var(--ha-card-box-shadow, none);
     color: var(--primary-text-color);
-    font-family: var(--paper-font-body1_-_font-family, inherit);
-    line-height: 1.2;
+    font-family: var(--ha-font-family-body, var(--paper-font-body1_-_font-family, inherit));
     cursor: pointer;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
   }
   .chip.no-action { cursor: default; }
   .chip:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
-  .chip.layout-count, .chip.layout-inline { padding: 0 12px 0 8px; }
 
   .icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex: 0 0 auto;
+    color: var(--adc-color, var(--primary-text-color));
+  }
+  .chip.tinted .icon {
     width: 26px;
     height: 26px;
     border-radius: 50%;
-    flex: 0 0 auto;
+    background: var(--adc-tint, transparent);
+    margin-left: -4px;
   }
   ha-icon, ha-state-icon { --mdc-icon-size: 18px; display: inline-flex; }
 
-  .labels { display: flex; flex-direction: column; justify-content: center; white-space: nowrap; }
-  .primary { font-size: 13px; font-weight: 500; }
-  .secondary { font-size: 12px; color: var(--secondary-text-color); }
-  .layout-count .primary, .layout-inline .primary { font-size: 14px; }
-  .secondary:empty { display: none; }
+  .labels {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    white-space: nowrap;
+  }
+  .name {
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 10px;
+    letter-spacing: 0.1px;
+    color: var(--adc-color, var(--secondary-text-color));
+  }
+  .chip.plain-name .name { color: var(--secondary-text-color); }
+  .value {
+    font-size: var(--ha-badge-font-size, 12px);
+    font-weight: 500;
+    line-height: 16px;
+    letter-spacing: 0.1px;
+  }
+  .name:empty { display: none; }
   .hidden { display: none !important; }
 
   /* entity list dialog */
@@ -1268,8 +1429,16 @@ const GENERAL_SCHEMA = [
     name: "",
     type: "grid",
     schema: [
+      { name: "pluralize", selector: { boolean: {} } },
       { name: "show_area_name", selector: { boolean: {} } },
-      { name: "exclude_redundant_groups", selector: { boolean: {} } },
+    ],
+  },
+  {
+    name: "",
+    type: "grid",
+    schema: [
+      { name: "color_name", selector: { boolean: {} } },
+      { name: "icon_tint", selector: { boolean: {} } },
     ],
   },
   {
@@ -1279,6 +1448,19 @@ const GENERAL_SCHEMA = [
       { name: "include_hidden", selector: { boolean: {} } },
       { name: "include_diagnostic", selector: { boolean: {} } },
     ],
+  },
+  {
+    name: "groups",
+    selector: {
+      select: {
+        mode: "dropdown",
+        options: [
+          { value: "auto", label: "Skip groups whose members are all counted" },
+          { value: "exclude", label: "Never count groups" },
+          { value: "include", label: "Count groups like any other entity" },
+        ],
+      },
+    },
   },
   {
     name: "tap_action",
@@ -1352,6 +1534,7 @@ const CHIP_SCHEMA = [
             mode: "dropdown",
             options: [
               { value: "active", label: "Active" },
+              { value: "inactive", label: "Inactive (closed, off, locked, ...)" },
               { value: "unavailable", label: "Unavailable" },
               { value: "all", label: "All" },
             ],
@@ -1387,7 +1570,10 @@ const LABELS = {
   layout: "Chip layout",
   show_state_text: "Show the state word after the count",
   show_area_name: "Append the area name",
-  exclude_redundant_groups: "Skip groups whose members are all counted",
+  pluralize: "Use plural names",
+  color_name: "Colour the name line",
+  icon_tint: "Tinted circle behind the icon",
+  groups: "Group entities",
   include_hidden: "Include hidden entities",
   include_diagnostic: "Include diagnostic/config entities",
   tap_action: "Tap action",
@@ -1410,16 +1596,30 @@ class AreaDomainChipsEditor extends HTMLElement {
     this._config = null;
     this._hass = null;
     this._forms = [];
+    this._open = [];
+    this._lastEmitted = null;
   }
 
   setConfig(config) {
-    this._config = JSON.parse(JSON.stringify(config || {}));
+    const incoming = JSON.stringify(config || {});
+    this._config = JSON.parse(incoming);
     if (this._config.types && !this._config.chips) {
       this._config.chips = this._config.types;
       delete this._config.types;
     }
     if (!Array.isArray(this._config.chips)) this._config.chips = [];
+    this._open.length = this._config.chips.length;
+
+    // Home Assistant hands the config straight back after every edit. Skipping
+    // the rebuild there keeps the expansion panels open and the focused field
+    // focused while typing.
+    if (incoming === this._lastEmitted) return;
     this._render();
+  }
+
+  _moveOpen(from, to) {
+    const open = this._open;
+    [open[from], open[to]] = [open[to], open[from]];
   }
 
   set hass(hass) {
@@ -1428,6 +1628,7 @@ class AreaDomainChipsEditor extends HTMLElement {
   }
 
   _emit() {
+    this._lastEmitted = JSON.stringify(this._config);
     this.dispatchEvent(
       new CustomEvent("config-changed", {
         detail: { config: this._config },
@@ -1504,7 +1705,9 @@ class AreaDomainChipsEditor extends HTMLElement {
       }
       .btn:hover:not(:disabled) { background: var(--secondary-background-color, rgba(0, 0, 0, 0.05)); }
       .btn:disabled { opacity: 0.4; cursor: default; }
-      .add-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      ha-expansion-panel { display: block; margin-bottom: 8px; --expansion-panel-content-padding: 12px; }
+      .panel-icons { display: flex; align-items: center; gap: 4px; padding-right: 8px; }
+      .add-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
       select {
         padding: 6px;
         border-radius: 6px;
@@ -1526,8 +1729,11 @@ class AreaDomainChipsEditor extends HTMLElement {
           areas: this._config.areas || [],
           layout: this._config.layout || "stacked",
           show_state_text: this._config.show_state_text !== false,
+          pluralize: this._config.pluralize !== false,
           show_area_name: !!this._config.show_area_name,
-          exclude_redundant_groups: this._config.exclude_redundant_groups !== false,
+          color_name: this._config.color_name !== false,
+          icon_tint: !!this._config.icon_tint,
+          groups: this._config.groups || (this._config.exclude_redundant_groups === false ? "include" : "auto"),
           include_hidden: !!this._config.include_hidden,
           include_diagnostic: !!this._config.include_diagnostic,
           tap_action: (this._config.tap_action || { action: "list" }).action,
@@ -1538,8 +1744,12 @@ class AreaDomainChipsEditor extends HTMLElement {
           this._config.areas = value.areas || [];
           this._config.layout = value.layout || "stacked";
           this._config.show_state_text = value.show_state_text !== false;
+          this._config.pluralize = value.pluralize !== false;
           this._config.show_area_name = value.show_area_name;
-          this._config.exclude_redundant_groups = value.exclude_redundant_groups !== false;
+          this._config.color_name = value.color_name !== false;
+          this._config.icon_tint = !!value.icon_tint;
+          this._config.groups = value.groups || "auto";
+          delete this._config.exclude_redundant_groups;
           this._config.include_hidden = value.include_hidden;
           this._config.include_diagnostic = value.include_diagnostic;
           this._config.tap_action = { action: value.tap_action || "list" };
@@ -1554,43 +1764,70 @@ class AreaDomainChipsEditor extends HTMLElement {
     heading.textContent = "Chips";
     root.appendChild(heading);
 
+    const usePanel = !!customElements.get("ha-expansion-panel");
+
     this._config.chips.forEach((chip, i) => {
-      const box = document.createElement("div");
-      box.className = "chip-box";
-
-      const head = document.createElement("div");
-      head.className = "chip-head";
-      const title = document.createElement("span");
-      title.textContent = this._chipTitle(chip, i);
-      const spacer = document.createElement("span");
-      spacer.className = "spacer";
-      head.appendChild(title);
-      head.appendChild(spacer);
-
-      head.appendChild(
+      const heading = this._chipTitle(chip, i);
+      const buttons = [
         this._button("↑", () => {
           const c = this._config.chips;
           [c[i - 1], c[i]] = [c[i], c[i - 1]];
+          this._moveOpen(i, i - 1);
           this._emit();
           this._render();
-        }, i === 0)
-      );
-      head.appendChild(
+        }, i === 0),
         this._button("↓", () => {
           const c = this._config.chips;
           [c[i + 1], c[i]] = [c[i], c[i + 1]];
+          this._moveOpen(i, i + 1);
           this._emit();
           this._render();
-        }, i === this._config.chips.length - 1)
-      );
-      head.appendChild(
+        }, i === this._config.chips.length - 1),
         this._button("✕", () => {
           this._config.chips.splice(i, 1);
+          this._open.splice(i, 1);
           this._emit();
           this._render();
-        })
-      );
-      box.appendChild(head);
+        }),
+      ];
+
+      let box;
+      let title;
+
+      if (usePanel) {
+        box = document.createElement("ha-expansion-panel");
+        box.outlined = true;
+        box.header = heading;
+        box.expanded = !!this._open[i];
+        box.addEventListener("expanded-changed", (ev) => {
+          this._open[i] = !!ev.detail.expanded;
+        });
+
+        const icons = document.createElement("div");
+        icons.slot = "icons";
+        icons.className = "panel-icons";
+        buttons.forEach((b) => {
+          b.addEventListener("click", (ev) => ev.stopPropagation());
+          icons.appendChild(b);
+        });
+        box.appendChild(icons);
+
+        // Keep the header in sync while the form is edited.
+        title = { set textContent(value) { box.header = value; } };
+      } else {
+        box = document.createElement("div");
+        box.className = "chip-box";
+        const head = document.createElement("div");
+        head.className = "chip-head";
+        title = document.createElement("span");
+        title.textContent = heading;
+        const spacer = document.createElement("span");
+        spacer.className = "spacer";
+        head.appendChild(title);
+        head.appendChild(spacer);
+        buttons.forEach((b) => head.appendChild(b));
+        box.appendChild(head);
+      }
 
       box.appendChild(
         this._makeForm(
@@ -1646,6 +1883,7 @@ class AreaDomainChipsEditor extends HTMLElement {
         const preset = PRESETS.find((p) => p.key === select.value);
         if (!preset) return;
         this._config.chips.push(Object.assign({ hide_when_zero: true }, preset.cfg));
+        this._open[this._config.chips.length - 1] = true;
         this._emit();
         this._render();
       })
@@ -1653,6 +1891,7 @@ class AreaDomainChipsEditor extends HTMLElement {
     addRow.appendChild(
       this._button("+ Add empty chip", () => {
         this._config.chips.push({ domain: "light", hide_when_zero: true });
+        this._open[this._config.chips.length - 1] = true;
         this._emit();
         this._render();
       })
