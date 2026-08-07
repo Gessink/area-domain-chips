@@ -12,7 +12,7 @@
  * https://github.com/Gessink/area-domain-chips
  */
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 
 /* ------------------------------------------------------------------ *
  * State helpers
@@ -20,9 +20,10 @@ const VERSION = "1.0.0";
 
 const UNAVAILABLE = ["unavailable", "unknown"];
 
-// States that count as "active" per domain.
+// States that count as "active" per domain. The first entry doubles as the
+// word shown next to the count ("6 open", "3 on").
 const DOMAIN_ACTIVE_STATES = {
-  alarm_control_panel: ["armed_home", "armed_away", "armed_night", "armed_vacation", "armed_custom_bypass", "arming", "pending", "triggered"],
+  alarm_control_panel: ["triggered", "armed_away", "armed_home", "armed_night", "armed_vacation", "armed_custom_bypass", "arming", "pending"],
   automation: ["on"],
   binary_sensor: ["on"],
   camera: ["recording", "streaming"],
@@ -56,6 +57,26 @@ const OFF_LIKE = [
   "not_home", "below_horizon", "unavailable", "unknown", "",
 ];
 
+// Fallback icons when no icon is configured and ha-state-icon is unavailable.
+const DOMAIN_ICONS = {
+  binary_sensor: "mdi:radiobox-blank",
+  climate: "mdi:thermostat",
+  cover: "mdi:window-shutter",
+  fan: "mdi:fan",
+  humidifier: "mdi:air-humidifier",
+  light: "mdi:lightbulb",
+  lock: "mdi:lock",
+  media_player: "mdi:cast",
+  switch: "mdi:toggle-switch-variant",
+  vacuum: "mdi:robot-vacuum",
+  valve: "mdi:pipe-valve",
+};
+
+function activeStatesFor(chip, domain) {
+  if (Array.isArray(chip.active_states) && chip.active_states.length) return chip.active_states;
+  return DOMAIN_ACTIVE_STATES[domain] || ["on"];
+}
+
 function isActive(stateObj, chip) {
   const state = stateObj.state;
   if (UNAVAILABLE.includes(state)) return false;
@@ -76,6 +97,55 @@ function isActive(stateObj, chip) {
 
 function isUnavailable(stateObj) {
   return UNAVAILABLE.includes(stateObj.state);
+}
+
+// Group-style entities expose their children in the `entity_id` attribute.
+function groupMembers(stateObj) {
+  const attrs = stateObj.attributes || {};
+  return Array.isArray(attrs.entity_id) ? attrs.entity_id : null;
+}
+
+/* ------------------------------------------------------------------ *
+ * Localisation
+ * ------------------------------------------------------------------ */
+
+function tr(hass, key) {
+  if (!hass || !hass.localize || !key) return "";
+  try {
+    return hass.localize(key) || "";
+  } catch (err) {
+    return "";
+  }
+}
+
+function domainName(hass, domain) {
+  return tr(hass, `component.${domain}.title`) || domain;
+}
+
+function deviceClassName(hass, domain, deviceClass) {
+  return (
+    tr(hass, `component.${domain}.entity_component.${deviceClass}.name`) ||
+    tr(hass, `component.sensor.entity_component.${deviceClass}.name`) ||
+    deviceClass
+  );
+}
+
+function stateName(hass, domain, deviceClass, state) {
+  if (deviceClass) {
+    const withClass = tr(hass, `component.${domain}.entity_component.${deviceClass}.state.${state}`);
+    if (withClass) return withClass;
+  }
+  return (
+    tr(hass, `component.${domain}.entity_component._.state.${state}`) ||
+    tr(hass, `state.default.${state}`) ||
+    state
+  );
+}
+
+function lowerFirst(hass, text) {
+  if (!text) return text;
+  const lang = hass && hass.language ? hass.language : undefined;
+  return text.charAt(0).toLocaleLowerCase(lang) + text.slice(1);
 }
 
 /* ------------------------------------------------------------------ *
@@ -122,30 +192,60 @@ function asArray(value) {
 
 /* ------------------------------------------------------------------ *
  * Colours
+ *
+ * Values match Home Assistant's own `ui_color` selector: a theme colour name,
+ * `state` (the colour HA gives that domain when active), `none`, or any raw
+ * CSS colour. The tint is derived with color-mix so it works for all of them.
  * ------------------------------------------------------------------ */
 
 const THEME_COLORS = [
   "primary", "accent", "red", "pink", "purple", "deep-purple", "indigo",
   "blue", "light-blue", "cyan", "teal", "green", "light-green", "lime",
-  "yellow", "amber", "orange", "deep-orange", "brown", "grey", "blue-grey",
-  "black", "white", "disabled",
+  "yellow", "amber", "orange", "deep-orange", "brown", "light-grey", "grey",
+  "dark-grey", "blue-grey", "black", "white", "disabled",
 ];
 
-function colorVars(color) {
-  if (!color) {
-    return {
-      fg: "var(--primary-text-color)",
-      bg: "rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.05)",
-    };
+function resolveColor(color, domain, deviceClass) {
+  if (!color || color === "state") {
+    const chain = [];
+    if (domain && deviceClass) chain.push(`--state-${domain}-${deviceClass}-color`);
+    if (domain) chain.push(`--state-${domain}-active-color`);
+    chain.push("--state-active-color");
+    // Nested fallbacks: var(--a, var(--b, var(--c, <literal>)))
+    return chain.reduceRight(
+      (fallback, name) => `var(${name}, ${fallback})`,
+      "var(--primary-color)"
+    );
   }
-  if (THEME_COLORS.includes(color)) {
-    return {
-      fg: `rgb(var(--rgb-${color}-color))`,
-      bg: `rgba(var(--rgb-${color}-color), 0.20)`,
-    };
-  }
-  // Raw CSS colour (hex, rgb(), named)
-  return { fg: color, bg: "transparent" };
+  if (color === "none") return "var(--primary-text-color)";
+  if (THEME_COLORS.includes(color)) return `var(--${color}-color)`;
+  return color;
+}
+
+function tintOf(color) {
+  return `color-mix(in srgb, ${color} 20%, transparent)`;
+}
+
+/* ------------------------------------------------------------------ *
+ * Controls shown in the entity list
+ * ------------------------------------------------------------------ */
+
+const TOGGLE_DOMAINS = [
+  "light", "switch", "fan", "input_boolean", "humidifier", "siren", "remote",
+  "automation", "media_player",
+];
+
+// Cover / valve supported_features bits
+const FEAT_OPEN = 1;
+const FEAT_CLOSE = 2;
+const FEAT_STOP = 8;
+
+function controlKind(domain) {
+  if (TOGGLE_DOMAINS.includes(domain)) return "toggle";
+  if (domain === "cover" || domain === "valve") return "position";
+  if (domain === "lock") return "lock";
+  if (domain === "vacuum") return "vacuum";
+  return "none";
 }
 
 /* ------------------------------------------------------------------ *
@@ -153,21 +253,21 @@ function colorVars(color) {
  * ------------------------------------------------------------------ */
 
 const PRESETS = [
-  { key: "lights", label: "Lights on", cfg: { domain: "light", name: "Lights", icon: "mdi:lightbulb", color: "amber" } },
-  { key: "switches", label: "Switches on", cfg: { domain: "switch", name: "Switches", icon: "mdi:toggle-switch-variant", color: "blue" } },
-  { key: "fans", label: "Fans on", cfg: { domain: "fan", name: "Fans", icon: "mdi:fan", color: "cyan" } },
-  { key: "doors", label: "Doors open", cfg: { domain: "binary_sensor", device_class: "door", name: "Doors", icon: "mdi:door-open", color: "red" } },
-  { key: "windows", label: "Windows open (binary_sensor)", cfg: { domain: "binary_sensor", device_class: "window", name: "Windows", icon: "mdi:window-open-variant", color: "red" } },
-  { key: "covers", label: "Covers open", cfg: { domain: "cover", name: "Covers", icon: "mdi:window-shutter-open", color: "blue" } },
-  { key: "locks", label: "Locks unlocked", cfg: { domain: "lock", name: "Locks", icon: "mdi:lock-open-variant", color: "red" } },
-  { key: "motion", label: "Motion detected", cfg: { domain: "binary_sensor", device_class: "motion", name: "Motion", icon: "mdi:motion-sensor", color: "orange" } },
-  { key: "vacuum", label: "Vacuums running", cfg: { domain: "vacuum", name: "Vacuums", icon: "mdi:robot-vacuum", color: "teal" } },
-  { key: "climate", label: "Thermostats active", cfg: { domain: "climate", name: "Climate", icon: "mdi:thermostat", color: "deep-orange" } },
-  { key: "media", label: "Media playing", cfg: { domain: "media_player", name: "Media", icon: "mdi:play-circle", color: "purple" } },
-  { key: "moisture", label: "Water leak", cfg: { domain: "binary_sensor", device_class: "moisture", name: "Leak", icon: "mdi:water-alert", color: "blue" } },
-  { key: "smoke", label: "Smoke alarm", cfg: { domain: "binary_sensor", device_class: "smoke", name: "Smoke", icon: "mdi:smoke-detector-variant-alert", color: "red" } },
-  { key: "battery_low", label: "Battery low", cfg: { domain: "binary_sensor", device_class: "battery", name: "Battery", icon: "mdi:battery-alert", color: "orange" } },
-  { key: "unavailable", label: "Unavailable entities", cfg: { mode: "unavailable", name: "Offline", icon: "mdi:cloud-off-outline", color: "grey" } },
+  { key: "lights", label: "Lights on", cfg: { domain: "light", icon: "mdi:lightbulb", color: "amber" } },
+  { key: "switches", label: "Switches on", cfg: { domain: "switch", icon: "mdi:toggle-switch-variant", color: "blue" } },
+  { key: "fans", label: "Fans on", cfg: { domain: "fan", icon: "mdi:fan", color: "cyan" } },
+  { key: "doors", label: "Doors open", cfg: { domain: "binary_sensor", device_class: "door", icon: "mdi:door-open", color: "red" } },
+  { key: "windows", label: "Windows open (binary_sensor)", cfg: { domain: "binary_sensor", device_class: "window", icon: "mdi:window-open-variant", color: "red" } },
+  { key: "covers", label: "Covers open", cfg: { domain: "cover", icon: "mdi:window-shutter-open", color: "blue" } },
+  { key: "locks", label: "Locks unlocked", cfg: { domain: "lock", icon: "mdi:lock-open-variant", color: "red" } },
+  { key: "motion", label: "Motion detected", cfg: { domain: "binary_sensor", device_class: "motion", icon: "mdi:motion-sensor", color: "orange" } },
+  { key: "vacuum", label: "Vacuums running", cfg: { domain: "vacuum", icon: "mdi:robot-vacuum", color: "teal" } },
+  { key: "climate", label: "Thermostats active", cfg: { domain: "climate", icon: "mdi:thermostat", color: "deep-orange" } },
+  { key: "media", label: "Media playing", cfg: { domain: "media_player", icon: "mdi:play-circle", color: "purple" } },
+  { key: "moisture", label: "Water leak", cfg: { domain: "binary_sensor", device_class: "moisture", icon: "mdi:water-alert", color: "blue" } },
+  { key: "smoke", label: "Smoke alarm", cfg: { domain: "binary_sensor", device_class: "smoke", icon: "mdi:smoke-detector-variant-alert", color: "red" } },
+  { key: "battery_low", label: "Battery low", cfg: { domain: "binary_sensor", device_class: "battery", icon: "mdi:battery-alert", color: "orange" } },
+  { key: "unavailable", label: "Unavailable entities", cfg: { mode: "unavailable", icon: "mdi:cloud-off-outline", color: "grey" } },
 ];
 
 const DOMAIN_OPTIONS = [
@@ -189,10 +289,11 @@ class AreaDomainChips extends HTMLElement {
     this._hass = null;
     this._index = null;       // per chip: array of candidate entity ids
     this._indexKey = null;    // registry fingerprint the index was built from
-    this._lastCounts = null;
+    this._lastRender = null;
     this._built = false;
     this._holdTimer = null;
     this._held = false;
+    this._dialog = null;
   }
 
   static getConfigElement() {
@@ -205,9 +306,9 @@ class AreaDomainChips extends HTMLElement {
       type: "custom:area-domain-chips",
       areas: areas.length ? [areas[0]] : [],
       chips: [
-        { domain: "light", name: "Lights", icon: "mdi:lightbulb", color: "amber", hide_when_zero: true },
-        { domain: "binary_sensor", device_class: "door", name: "Doors", icon: "mdi:door-open", color: "red", hide_when_zero: true },
-        { domain: "cover", name: "Covers", icon: "mdi:window-shutter-open", color: "blue", hide_when_zero: true },
+        { domain: "light", icon: "mdi:lightbulb", color: "amber", hide_when_zero: true },
+        { domain: "binary_sensor", device_class: "door", icon: "mdi:door-open", color: "red", hide_when_zero: true },
+        { domain: "cover", icon: "mdi:window-shutter-open", color: "blue", hide_when_zero: true },
       ],
     };
   }
@@ -226,11 +327,14 @@ class AreaDomainChips extends HTMLElement {
         areas: [],
         exclude_areas: [],
         exclude_entities: [],
+        exclude_redundant_groups: true,
         include_hidden: false,
         include_diagnostic: false,
-        show_name: false,
+        layout: "stacked",
+        show_state_text: true,
         show_area_name: false,
         spacing: 8,
+        list_scope: "auto",
         tap_action: { action: "list" },
         hold_action: { action: "none" },
       },
@@ -240,7 +344,8 @@ class AreaDomainChips extends HTMLElement {
 
     this._index = null;
     this._indexKey = null;
-    this._lastCounts = null;
+    this._lastRender = null;
+    this._closeDialog();
     if (this._built) this._rebuild();
   }
 
@@ -261,6 +366,49 @@ class AreaDomainChips extends HTMLElement {
 
   get hass() {
     return this._hass;
+  }
+
+  /* -------------------- chip metadata -------------------- */
+
+  _chipDomain(chip) {
+    const domains = asArray(chip.domains).concat(asArray(chip.domain));
+    return domains.length ? domains[0] : undefined;
+  }
+
+  _chipDeviceClass(chip) {
+    const dc = asArray(chip.device_classes).concat(asArray(chip.device_class));
+    return dc.length ? dc[0] : undefined;
+  }
+
+  // Localised default name: device class first, then the domain.
+  _chipName(chip) {
+    if (chip.name) return chip.name;
+    const hass = this._hass;
+    const domain = this._chipDomain(chip);
+    const deviceClass = this._chipDeviceClass(chip);
+    if (deviceClass) return deviceClassName(hass, domain || "sensor", deviceClass);
+    if (domain) return domainName(hass, domain);
+    if (chip.mode === "unavailable") return stateName(hass, "", "", "unavailable");
+    return tr(hass, "ui.panel.config.entities.caption") || "Entities";
+  }
+
+  // The word after the count: "6 open", "3 on".
+  _chipStateWord(chip) {
+    if (chip.state_text !== undefined) return chip.state_text;
+    const hass = this._hass;
+    const mode = chip.mode || "active";
+    if (mode === "all") return "";
+    if (mode === "unavailable") return lowerFirst(hass, stateName(hass, "", "", "unavailable"));
+
+    const domain = this._chipDomain(chip);
+    if (!domain) return "";
+    const deviceClass = this._chipDeviceClass(chip);
+    const state = activeStatesFor(chip, domain)[0];
+    return lowerFirst(hass, stateName(hass, domain, deviceClass, state));
+  }
+
+  _chipColor(chip) {
+    return resolveColor(chip.color, this._chipDomain(chip), this._chipDeviceClass(chip));
   }
 
   /* -------------------- matching -------------------- */
@@ -344,17 +492,35 @@ class AreaDomainChips extends HTMLElement {
         if (this._chipMatches(chips[c], entityId, stateObj)) index[c].push(entityId);
       }
     }
+
+    // Drop group-style entities whose children are all counted anyway, so a
+    // light group next to its own bulbs does not inflate the number.
+    if (cfg.exclude_redundant_groups !== false) {
+      for (let c = 0; c < index.length; c++) {
+        const ids = index[c];
+        const present = new Set(ids);
+        index[c] = ids.filter((id) => {
+          const members = groupMembers(hass.states[id]);
+          if (!members || !members.length) return true;
+          return !members.every((m) => present.has(m));
+        });
+      }
+    }
+
     this._index = index;
     this._indexKey = this._registryKey(hass);
+  }
+
+  _candidates(chipIndex) {
+    return (this._index && this._index[chipIndex]) || [];
   }
 
   _matchedEntities(chipIndex) {
     const hass = this._hass;
     const chip = this._config.chips[chipIndex];
-    const ids = this._index[chipIndex] || [];
     const mode = chip.mode || "active";
 
-    return ids.filter((id) => {
+    return this._candidates(chipIndex).filter((id) => {
       const stateObj = hass.states[id];
       if (!stateObj) return false;
       if (mode === "all") return true;
@@ -363,98 +529,46 @@ class AreaDomainChips extends HTMLElement {
     });
   }
 
+  // Which entities the dialog lists. Controllable domains show everything in
+  // scope so the bulk buttons have something to act on; read-only domains only
+  // show what is actually counted.
+  _listEntities(chipIndex) {
+    const chip = this._config.chips[chipIndex];
+    const scope = chip.list_scope || this._config.list_scope || "auto";
+    const domain = this._chipDomain(chip);
+    const kind = controlKind(domain);
+
+    let resolved = scope;
+    if (scope === "auto") {
+      resolved = kind === "none" || (chip.mode && chip.mode !== "active") ? "matching" : "all";
+    }
+    if (resolved === "matching") return this._matchedEntities(chipIndex);
+
+    const hass = this._hass;
+    const matched = new Set(this._matchedEntities(chipIndex));
+    const ids = this._candidates(chipIndex).filter((id) => hass.states[id]);
+    // Active first, then alphabetically by friendly name.
+    return ids.sort((a, b) => {
+      const activeDiff = (matched.has(b) ? 1 : 0) - (matched.has(a) ? 1 : 0);
+      if (activeDiff) return activeDiff;
+      return this._friendlyName(a).localeCompare(this._friendlyName(b));
+    });
+  }
+
+  _friendlyName(entityId) {
+    const stateObj = this._hass.states[entityId];
+    return (stateObj && stateObj.attributes && stateObj.attributes.friendly_name) || entityId;
+  }
+
   /* -------------------- rendering -------------------- */
 
   _rebuild() {
     const root = this.shadowRoot;
     root.innerHTML = "";
+    this._dialog = null;
 
     const style = document.createElement("style");
-    style.textContent = `
-      :host { display: block; }
-      .wrap {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: var(--adc-gap, 8px);
-      }
-      .chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        height: var(--adc-height, 36px);
-        box-sizing: border-box;
-        padding: 0 10px;
-        border-radius: var(--adc-border-radius, 18px);
-        background: var(--adc-background, var(--card-background-color, #fff));
-        border: var(--ha-card-border-width, 1px) solid
-                var(--adc-border-color, var(--ha-card-border-color, var(--divider-color, #e0e0e0)));
-        box-shadow: var(--ha-card-box-shadow, none);
-        color: var(--primary-text-color);
-        font-family: var(--paper-font-body1_-_font-family, inherit);
-        font-size: 14px;
-        line-height: 1;
-        cursor: pointer;
-        user-select: none;
-        -webkit-tap-highlight-color: transparent;
-      }
-      .chip.no-action { cursor: default; }
-      .chip:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
-      .icon {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 24px;
-        height: 24px;
-        border-radius: 50%;
-        flex: 0 0 auto;
-      }
-      ha-icon { --mdc-icon-size: 18px; }
-      .text { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
-      .count { font-weight: 500; }
-      .name { color: var(--secondary-text-color); font-size: 13px; }
-      .hidden { display: none !important; }
-
-      /* entity list overlay */
-      .scrim {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.4);
-        z-index: 9;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 16px;
-      }
-      .dialog {
-        background: var(--card-background-color, #fff);
-        color: var(--primary-text-color);
-        border-radius: var(--ha-card-border-radius, 12px);
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-        min-width: 280px;
-        max-width: 420px;
-        width: 100%;
-        max-height: 70vh;
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        font-family: var(--paper-font-body1_-_font-family, inherit);
-      }
-      .dialog h3 { margin: 0; padding: 16px 16px 8px; font-size: 18px; font-weight: 500; }
-      .list { overflow-y: auto; padding: 0 8px 12px; }
-      .row {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 10px 8px;
-        border-radius: 8px;
-        cursor: pointer;
-        font-size: 14px;
-      }
-      .row:hover { background: var(--secondary-background-color, rgba(0, 0, 0, 0.05)); }
-      .row .state { margin-left: auto; color: var(--secondary-text-color); font-size: 13px; }
-      .empty { padding: 8px 16px 16px; color: var(--secondary-text-color); font-size: 14px; }
-    `;
+    style.textContent = STYLES;
     root.appendChild(style);
 
     const wrap = document.createElement("div");
@@ -463,37 +577,37 @@ class AreaDomainChips extends HTMLElement {
     root.appendChild(wrap);
     this._wrap = wrap;
 
+    const layout = this._config.layout || "stacked";
+    const useStateIcon = !!customElements.get("ha-state-icon");
+
     this._chipEls = (this._config.chips || []).map((chip, i) => {
       const el = document.createElement("div");
-      el.className = "chip";
+      el.className = `chip layout-${chip.layout || layout}`;
       el.setAttribute("role", "button");
       el.setAttribute("tabindex", "0");
 
       const iconWrap = document.createElement("span");
       iconWrap.className = "icon";
-      const icon = document.createElement("ha-icon");
+      const dynamicIcon = !chip.icon && useStateIcon;
+      const icon = document.createElement(dynamicIcon ? "ha-state-icon" : "ha-icon");
       iconWrap.appendChild(icon);
 
-      const text = document.createElement("span");
-      text.className = "text";
-      const count = document.createElement("span");
-      count.className = "count";
-      const name = document.createElement("span");
-      name.className = "name";
-      text.appendChild(count);
-      text.appendChild(name);
+      const labels = document.createElement("span");
+      labels.className = "labels";
+      const primary = document.createElement("span");
+      primary.className = "primary";
+      const secondary = document.createElement("span");
+      secondary.className = "secondary";
+      labels.appendChild(primary);
+      labels.appendChild(secondary);
 
       el.appendChild(iconWrap);
-      el.appendChild(text);
-
-      const colors = colorVars(chip.color);
-      iconWrap.style.background = colors.bg;
-      icon.style.color = colors.fg;
+      el.appendChild(labels);
 
       this._attachActions(el, i);
       wrap.appendChild(el);
 
-      return { el, icon, iconWrap, count, name };
+      return { el, icon, iconWrap, primary, secondary, dynamicIcon };
     });
 
     this._built = true;
@@ -545,11 +659,14 @@ class AreaDomainChips extends HTMLElement {
     const act = (action || {}).action || "none";
     if (act === "none") return;
 
+    if (act === "list") {
+      this._showList(chipIndex);
+      return;
+    }
+
     const entities = this._matchedEntities(chipIndex);
 
-    if (act === "list") {
-      this._showList(chipIndex, entities);
-    } else if (act === "more-info") {
+    if (act === "more-info") {
       const target = action.entity || entities[0];
       if (target) this._fireMoreInfo(target);
     } else if (act === "navigate") {
@@ -574,86 +691,326 @@ class AreaDomainChips extends HTMLElement {
     );
   }
 
-  _showList(chipIndex, entities) {
-    const chip = this._config.chips[chipIndex];
+  /* -------------------- entity list dialog -------------------- */
+
+  _iconButton(iconName, label, onClick) {
+    const btn = document.createElement("button");
+    btn.className = "iconbtn";
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+    const icon = document.createElement("ha-icon");
+    icon.icon = iconName;
+    btn.appendChild(icon);
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      onClick();
+    });
+    return btn;
+  }
+
+  _textButton(iconName, label, onClick) {
+    const btn = document.createElement("button");
+    btn.className = "textbtn";
+    const icon = document.createElement("ha-icon");
+    icon.icon = iconName;
+    const span = document.createElement("span");
+    span.textContent = label;
+    btn.appendChild(icon);
+    btn.appendChild(span);
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      onClick();
+    });
+    return btn;
+  }
+
+  _call(domain, service, entityId) {
+    this._hass.callService(domain, service, {}, { entity_id: entityId });
+  }
+
+  // Returns {el, update} so the dialog can refresh in place instead of being
+  // rebuilt on every state change.
+  _buildRow(chipIndex, entityId) {
     const hass = this._hass;
+    const chip = this._config.chips[chipIndex];
+    const domain = entityId.split(".")[0];
+    const kind = controlKind(domain);
+
+    const row = document.createElement("div");
+    row.className = "row";
+
+    const iconWrap = document.createElement("span");
+    iconWrap.className = "row-icon";
+    const useStateIcon = !!customElements.get("ha-state-icon");
+    const icon = document.createElement(useStateIcon ? "ha-state-icon" : "ha-icon");
+    iconWrap.appendChild(icon);
+
+    const name = document.createElement("span");
+    name.className = "row-name";
+    name.textContent = this._friendlyName(entityId);
+
+    const state = document.createElement("span");
+    state.className = "row-state";
+
+    const controls = document.createElement("span");
+    controls.className = "row-controls";
+
+    row.appendChild(iconWrap);
+    row.appendChild(name);
+    row.appendChild(state);
+    row.appendChild(controls);
+
+    row.addEventListener("click", () => {
+      this._closeDialog();
+      this._fireMoreInfo(entityId);
+    });
+
+    let toggle = null;
+    const buttons = [];
+
+    if (kind === "toggle") {
+      if (customElements.get("ha-switch")) {
+        toggle = document.createElement("ha-switch");
+        toggle.addEventListener("click", (ev) => ev.stopPropagation());
+        toggle.addEventListener("change", (ev) => {
+          ev.stopPropagation();
+          this._call("homeassistant", toggle.checked ? "turn_on" : "turn_off", entityId);
+        });
+        controls.appendChild(toggle);
+      } else {
+        const btn = this._iconButton("mdi:power", tr(hass, "ui.card.common.toggle") || "Toggle", () =>
+          this._call("homeassistant", "toggle", entityId)
+        );
+        controls.appendChild(btn);
+        buttons.push({ btn, enabled: () => true });
+      }
+    } else if (kind === "position") {
+      const svc = domain === "valve" ? "valve" : "cover";
+      const openBtn = this._iconButton("mdi:arrow-up", tr(hass, "ui.card.cover.open_cover") || "Open", () =>
+        this._call(svc, domain === "valve" ? "open_valve" : "open_cover", entityId)
+      );
+      const stopBtn = this._iconButton("mdi:stop", tr(hass, "ui.card.cover.stop_cover") || "Stop", () =>
+        this._call(svc, domain === "valve" ? "stop_valve" : "stop_cover", entityId)
+      );
+      const closeBtn = this._iconButton("mdi:arrow-down", tr(hass, "ui.card.cover.close_cover") || "Close", () =>
+        this._call(svc, domain === "valve" ? "close_valve" : "close_cover", entityId)
+      );
+      controls.appendChild(openBtn);
+      controls.appendChild(stopBtn);
+      controls.appendChild(closeBtn);
+      const feat = () => {
+        const s = hass.states[entityId];
+        return (s && s.attributes && s.attributes.supported_features) || 0;
+      };
+      buttons.push({ btn: openBtn, enabled: () => !!(feat() & FEAT_OPEN) });
+      buttons.push({ btn: stopBtn, enabled: () => !!(feat() & FEAT_STOP) });
+      buttons.push({ btn: closeBtn, enabled: () => !!(feat() & FEAT_CLOSE) });
+    } else if (kind === "lock") {
+      const lockBtn = this._iconButton("mdi:lock", tr(hass, "ui.card.lock.lock") || "Lock", () =>
+        this._call("lock", "lock", entityId)
+      );
+      const unlockBtn = this._iconButton("mdi:lock-open-variant", tr(hass, "ui.card.lock.unlock") || "Unlock", () =>
+        this._call("lock", "unlock", entityId)
+      );
+      controls.appendChild(lockBtn);
+      controls.appendChild(unlockBtn);
+      buttons.push({ btn: lockBtn, enabled: () => true });
+      buttons.push({ btn: unlockBtn, enabled: () => true });
+    } else if (kind === "vacuum") {
+      const startBtn = this._iconButton("mdi:play", tr(hass, "ui.card.vacuum.actions.start_cleaning") || "Start", () =>
+        this._call("vacuum", "start", entityId)
+      );
+      const homeBtn = this._iconButton("mdi:home-map-marker", tr(hass, "ui.card.vacuum.actions.return_to_base") || "Return to base", () =>
+        this._call("vacuum", "return_to_base", entityId)
+      );
+      controls.appendChild(startBtn);
+      controls.appendChild(homeBtn);
+      buttons.push({ btn: startBtn, enabled: () => true });
+      buttons.push({ btn: homeBtn, enabled: () => true });
+    }
+
+    const update = () => {
+      const stateObj = this._hass.states[entityId];
+      if (!stateObj) return;
+      const active = isActive(stateObj, chip);
+      const unavailable = isUnavailable(stateObj);
+
+      row.classList.toggle("inactive", !active);
+      if (useStateIcon) {
+        icon.hass = this._hass;
+        icon.stateObj = stateObj;
+      } else {
+        icon.icon =
+          (stateObj.attributes && stateObj.attributes.icon) ||
+          chip.icon ||
+          DOMAIN_ICONS[domain] ||
+          "mdi:help-circle-outline";
+      }
+      icon.style.color = active ? this._chipColor(chip) : "var(--secondary-text-color)";
+
+      state.textContent = this._hass.formatEntityState
+        ? this._hass.formatEntityState(stateObj)
+        : stateObj.state;
+
+      if (toggle) {
+        toggle.checked = active;
+        toggle.disabled = unavailable;
+      }
+      buttons.forEach((b) => {
+        b.btn.disabled = unavailable || !b.enabled();
+      });
+    };
+
+    update();
+    return { el: row, update };
+  }
+
+  _bulkButtons(chipIndex, ids) {
+    const hass = this._hass;
+    const domain = this._chipDomain(this._config.chips[chipIndex]);
+    const kind = controlKind(domain);
+    const out = [];
+    if (!ids.length) return out;
+
+    if (kind === "toggle") {
+      const onWord = stateName(hass, domain, undefined, "on");
+      const offWord = stateName(hass, domain, undefined, "off");
+      out.push(
+        this._textButton("mdi:flash", tr(hass, "ui.card.common.turn_on") || onWord, () =>
+          this._call("homeassistant", "turn_on", ids)
+        )
+      );
+      out.push(
+        this._textButton("mdi:flash-off", tr(hass, "ui.card.common.turn_off") || offWord, () =>
+          this._call("homeassistant", "turn_off", ids)
+        )
+      );
+    } else if (kind === "position") {
+      const svc = domain === "valve" ? "valve" : "cover";
+      out.push(
+        this._textButton("mdi:arrow-up", tr(hass, "ui.card.cover.open_cover") || "Open", () =>
+          this._call(svc, domain === "valve" ? "open_valve" : "open_cover", ids)
+        )
+      );
+      out.push(
+        this._textButton("mdi:arrow-down", tr(hass, "ui.card.cover.close_cover") || "Close", () =>
+          this._call(svc, domain === "valve" ? "close_valve" : "close_cover", ids)
+        )
+      );
+    } else if (kind === "lock") {
+      out.push(
+        this._textButton("mdi:lock", tr(hass, "ui.card.lock.lock") || "Lock", () =>
+          this._call("lock", "lock", ids)
+        )
+      );
+    } else if (kind === "vacuum") {
+      out.push(
+        this._textButton("mdi:home-map-marker", tr(hass, "ui.card.vacuum.actions.return_to_base") || "Return to base", () =>
+          this._call("vacuum", "return_to_base", ids)
+        )
+      );
+    }
+    return out;
+  }
+
+  _showList(chipIndex) {
+    this._closeDialog();
+
+    const chip = this._config.chips[chipIndex];
+    const ids = this._listEntities(chipIndex);
 
     const scrim = document.createElement("div");
     scrim.className = "scrim";
     const dialog = document.createElement("div");
     dialog.className = "dialog";
 
+    const header = document.createElement("div");
+    header.className = "dialog-header";
+    const titles = document.createElement("div");
+    titles.className = "dialog-titles";
     const title = document.createElement("h3");
-    title.textContent = chip.name || this._defaultName(chip);
-    dialog.appendChild(title);
+    title.textContent = this._chipName(chip) + this._areaSuffix();
+    const subtitle = document.createElement("div");
+    subtitle.className = "dialog-subtitle";
+    titles.appendChild(title);
+    titles.appendChild(subtitle);
 
-    const close = () => {
-      scrim.remove();
-      document.removeEventListener("keydown", onKey);
-    };
-    const onKey = (ev) => {
-      if (ev.key === "Escape") close();
-    };
+    const closeBtn = this._iconButton("mdi:close", tr(this._hass, "ui.common.close") || "Close", () =>
+      this._closeDialog()
+    );
+    closeBtn.classList.add("close");
 
-    if (!entities.length) {
+    header.appendChild(titles);
+    header.appendChild(closeBtn);
+    dialog.appendChild(header);
+
+    const bulk = this._bulkButtons(chipIndex, ids);
+    if (bulk.length) {
+      const bulkRow = document.createElement("div");
+      bulkRow.className = "bulk";
+      bulk.forEach((b) => bulkRow.appendChild(b));
+      dialog.appendChild(bulkRow);
+    }
+
+    const list = document.createElement("div");
+    list.className = "list";
+    const rows = ids.map((id) => {
+      const row = this._buildRow(chipIndex, id);
+      list.appendChild(row.el);
+      return row;
+    });
+    if (!ids.length) {
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent = "No matching entities";
+      empty.textContent = tr(this._hass, "ui.panel.lovelace.cards.empty_state.title") || "Nothing to show";
       dialog.appendChild(empty);
     } else {
-      const list = document.createElement("div");
-      list.className = "list";
-      entities.forEach((entityId) => {
-        const stateObj = hass.states[entityId];
-        const row = document.createElement("div");
-        row.className = "row";
-
-        const icon = document.createElement("ha-icon");
-        icon.icon = this._entityIcon(stateObj) || chip.icon || "mdi:help-circle-outline";
-        icon.style.color = colorVars(chip.color).fg;
-
-        const label = document.createElement("span");
-        label.textContent =
-          (stateObj.attributes && stateObj.attributes.friendly_name) || entityId;
-
-        const state = document.createElement("span");
-        state.className = "state";
-        state.textContent = hass.formatEntityState
-          ? hass.formatEntityState(stateObj)
-          : stateObj.state;
-
-        row.appendChild(icon);
-        row.appendChild(label);
-        row.appendChild(state);
-        row.addEventListener("click", () => {
-          close();
-          this._fireMoreInfo(entityId);
-        });
-        list.appendChild(row);
-      });
       dialog.appendChild(list);
     }
 
+    const onKey = (ev) => {
+      if (ev.key === "Escape") this._closeDialog();
+    };
     scrim.addEventListener("click", (ev) => {
-      if (ev.target === scrim) close();
+      if (ev.target === scrim) this._closeDialog();
     });
     document.addEventListener("keydown", onKey);
 
     scrim.appendChild(dialog);
     this.shadowRoot.appendChild(scrim);
+
+    this._dialog = { chipIndex, ids, rows, subtitle, scrim, onKey };
+    this._refreshDialog();
   }
 
-  _entityIcon(stateObj) {
-    return stateObj.attributes ? stateObj.attributes.icon : undefined;
+  _refreshDialog() {
+    const dlg = this._dialog;
+    if (!dlg) return;
+
+    // Rebuild if the entity set changed (a new device, a changed area, ...).
+    const current = this._listEntities(dlg.chipIndex);
+    if (current.length !== dlg.ids.length || current.some((id, i) => id !== dlg.ids[i])) {
+      this._showList(dlg.chipIndex);
+      return;
+    }
+
+    dlg.rows.forEach((r) => r.update());
+
+    const chip = this._config.chips[dlg.chipIndex];
+    const count = this._matchedEntities(dlg.chipIndex).length;
+    const word = this._chipStateWord(chip);
+    dlg.subtitle.textContent = word ? `${count} ${word}` : String(count);
   }
 
-  _defaultName(chip) {
-    const domains = asArray(chip.domains).concat(asArray(chip.domain));
-    const dc = asArray(chip.device_classes).concat(asArray(chip.device_class));
-    if (dc.length) return dc[0];
-    if (domains.length) return domains[0];
-    return "Entities";
+  _closeDialog() {
+    const dlg = this._dialog;
+    if (!dlg) return;
+    document.removeEventListener("keydown", dlg.onKey);
+    dlg.scrim.remove();
+    this._dialog = null;
   }
+
+  /* -------------------- update -------------------- */
 
   _areaSuffix() {
     if (!this._config.show_area_name) return "";
@@ -671,17 +1028,19 @@ class AreaDomainChips extends HTMLElement {
       this._buildIndex();
     }
 
+    this._refreshDialog();
+
     const chips = this._config.chips || [];
-    const counts = [];
-    for (let i = 0; i < chips.length; i++) {
-      counts.push(this._matchedEntities(i).length);
-    }
+    const matched = chips.map((_, i) => this._matchedEntities(i));
+    const counts = matched.map((m) => m.length);
 
-    // Skip DOM work when nothing changed.
-    const key = counts.join(",");
-    if (this._lastCounts === key) return;
-    this._lastCounts = key;
+    // Skip DOM work when nothing changed. The language is part of the key so
+    // switching language re-renders the localised labels.
+    const key = `${hass.language}|${counts.join(",")}|${matched.map((m) => m[0] || "").join(",")}`;
+    if (this._lastRender === key) return;
+    this._lastRender = key;
 
+    const layout = this._config.layout || "stacked";
     let anyVisible = false;
 
     for (let i = 0; i < chips.length; i++) {
@@ -697,25 +1056,191 @@ class AreaDomainChips extends HTMLElement {
       if (hidden) continue;
       anyVisible = true;
 
-      parts.icon.icon = chip.icon || "mdi:help-circle-outline";
-      parts.count.textContent = String(count);
+      const color = this._chipColor(chip);
+      parts.icon.style.color = color;
+      parts.iconWrap.style.background = tintOf(color);
 
-      const showName = chip.show_name !== undefined ? chip.show_name : this._config.show_name;
-      if (showName) {
-        parts.name.textContent = (chip.name || this._defaultName(chip)) + this._areaSuffix();
-        parts.name.classList.remove("hidden");
+      if (parts.dynamicIcon) {
+        const first = matched[i][0] || this._candidates(i)[0];
+        parts.icon.hass = hass;
+        parts.icon.stateObj = first ? hass.states[first] : undefined;
       } else {
-        parts.name.textContent = "";
-        parts.name.classList.add("hidden");
+        parts.icon.icon =
+          chip.icon || DOMAIN_ICONS[this._chipDomain(chip)] || "mdi:help-circle-outline";
       }
 
-      parts.el.title = (chip.name || this._defaultName(chip)) + this._areaSuffix();
+      const name = this._chipName(chip) + this._areaSuffix();
+      const showState = chip.show_state_text !== undefined
+        ? chip.show_state_text
+        : this._config.show_state_text;
+      const word = showState ? this._chipStateWord(chip) : "";
+      const countText = word ? `${count} ${word}` : String(count);
+      const chipLayout = chip.layout || layout;
+
+      if (chipLayout === "count") {
+        parts.primary.textContent = countText;
+        parts.secondary.textContent = "";
+      } else if (chipLayout === "inline") {
+        parts.primary.textContent = `${countText} ${name}`;
+        parts.secondary.textContent = "";
+      } else {
+        parts.primary.textContent = name;
+        parts.secondary.textContent = countText;
+      }
+
+      parts.el.title = `${name}: ${countText}`;
     }
 
     // Collapse the whole element when every chip is hidden.
     this.style.display = anyVisible ? "" : "none";
   }
+
+  disconnectedCallback() {
+    this._closeDialog();
+  }
 }
+
+const STYLES = `
+  :host { display: block; }
+  .wrap {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--adc-gap, 8px);
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: var(--adc-height, 36px);
+    box-sizing: border-box;
+    padding: 4px 12px 4px 8px;
+    border-radius: var(--adc-border-radius, 20px);
+    background: var(--adc-background, var(--card-background-color, #fff));
+    border: var(--ha-card-border-width, 1px) solid
+            var(--adc-border-color, var(--ha-card-border-color, var(--divider-color, #e0e0e0)));
+    box-shadow: var(--ha-card-box-shadow, none);
+    color: var(--primary-text-color);
+    font-family: var(--paper-font-body1_-_font-family, inherit);
+    line-height: 1.2;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .chip.no-action { cursor: default; }
+  .chip:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+  .chip.layout-count, .chip.layout-inline { padding: 0 12px 0 8px; }
+
+  .icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  ha-icon, ha-state-icon { --mdc-icon-size: 18px; display: inline-flex; }
+
+  .labels { display: flex; flex-direction: column; justify-content: center; white-space: nowrap; }
+  .primary { font-size: 13px; font-weight: 500; }
+  .secondary { font-size: 12px; color: var(--secondary-text-color); }
+  .layout-count .primary, .layout-inline .primary { font-size: 14px; }
+  .secondary:empty { display: none; }
+  .hidden { display: none !important; }
+
+  /* entity list dialog */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+  .dialog {
+    background: var(--card-background-color, #fff);
+    color: var(--primary-text-color);
+    border-radius: var(--ha-card-border-radius, 12px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    min-width: 300px;
+    max-width: 460px;
+    width: 100%;
+    max-height: 76vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    font-family: var(--paper-font-body1_-_font-family, inherit);
+    cursor: default;
+  }
+  .dialog-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 16px 12px 8px 16px;
+  }
+  .dialog-titles { flex: 1; min-width: 0; }
+  .dialog h3 { margin: 0; font-size: 18px; font-weight: 500; }
+  .dialog-subtitle { color: var(--secondary-text-color); font-size: 13px; margin-top: 2px; }
+  .bulk { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 16px 12px; }
+
+  .textbtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--divider-color, #e0e0e0);
+    background: transparent;
+    color: var(--primary-text-color);
+    border-radius: 16px;
+    padding: 5px 12px 5px 8px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .textbtn:hover { background: var(--secondary-background-color, rgba(0, 0, 0, 0.05)); }
+  .textbtn ha-icon { --mdc-icon-size: 16px; }
+
+  .iconbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--secondary-text-color);
+    cursor: pointer;
+    padding: 0;
+  }
+  .iconbtn:hover:not(:disabled) { background: var(--secondary-background-color, rgba(0, 0, 0, 0.05)); }
+  .iconbtn:disabled { opacity: 0.35; cursor: default; }
+  .iconbtn ha-icon { --mdc-icon-size: 20px; }
+  .iconbtn.close { color: var(--primary-text-color); }
+
+  .list { overflow-y: auto; padding: 0 8px 12px; }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+  .row:hover { background: var(--secondary-background-color, rgba(0, 0, 0, 0.05)); }
+  .row.inactive .row-name { color: var(--secondary-text-color); }
+  .row-icon { display: inline-flex; flex: 0 0 auto; }
+  .row-icon ha-icon, .row-icon ha-state-icon { --mdc-icon-size: 22px; }
+  .row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-state { color: var(--secondary-text-color); font-size: 13px; white-space: nowrap; }
+  .row-controls { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+  .empty { padding: 0 16px 20px; color: var(--secondary-text-color); font-size: 14px; }
+`;
 
 customElements.define("area-domain-chips", AreaDomainChips);
 
@@ -723,14 +1248,28 @@ customElements.define("area-domain-chips", AreaDomainChips);
  * Visual editor
  * ------------------------------------------------------------------ */
 
+const LAYOUT_OPTIONS = [
+  { value: "stacked", label: "Name above the count" },
+  { value: "inline", label: "Count and name on one line" },
+  { value: "count", label: "Count only" },
+];
+
 const GENERAL_SCHEMA = [
   { name: "areas", selector: { area: { multiple: true } } },
   {
     name: "",
     type: "grid",
     schema: [
-      { name: "show_name", selector: { boolean: {} } },
+      { name: "layout", selector: { select: { mode: "dropdown", options: LAYOUT_OPTIONS } } },
+      { name: "show_state_text", selector: { boolean: {} } },
+    ],
+  },
+  {
+    name: "",
+    type: "grid",
+    schema: [
       { name: "show_area_name", selector: { boolean: {} } },
+      { name: "exclude_redundant_groups", selector: { boolean: {} } },
     ],
   },
   {
@@ -747,7 +1286,7 @@ const GENERAL_SCHEMA = [
       select: {
         mode: "dropdown",
         options: [
-          { value: "list", label: "Show matching entities" },
+          { value: "list", label: "Show entity list with controls" },
           { value: "more-info", label: "More info (first entity)" },
           { value: "toggle", label: "Toggle all matching entities" },
           { value: "turn_off", label: "Turn off all matching entities" },
@@ -763,7 +1302,7 @@ const GENERAL_SCHEMA = [
         mode: "dropdown",
         options: [
           { value: "none", label: "No action" },
-          { value: "list", label: "Show matching entities" },
+          { value: "list", label: "Show entity list with controls" },
           { value: "toggle", label: "Toggle all matching entities" },
           { value: "turn_off", label: "Turn off all matching entities" },
         ],
@@ -804,16 +1343,8 @@ const CHIP_SCHEMA = [
     name: "",
     type: "grid",
     schema: [
-      {
-        name: "color",
-        selector: {
-          select: {
-            mode: "dropdown",
-            custom_value: true,
-            options: THEME_COLORS.map((c) => ({ value: c, label: c })),
-          },
-        },
-      },
+      // Home Assistant's own colour picker, including the "state" (domain colour) option.
+      { name: "color", selector: { ui_color: { default_color: "state", include_state: true, include_none: true } } },
       {
         name: "mode",
         selector: {
@@ -834,15 +1365,29 @@ const CHIP_SCHEMA = [
     type: "grid",
     schema: [
       { name: "hide_when_zero", selector: { boolean: {} } },
-      { name: "show_name", selector: { boolean: {} } },
+      {
+        name: "list_scope",
+        selector: {
+          select: {
+            mode: "dropdown",
+            options: [
+              { value: "auto", label: "Auto" },
+              { value: "all", label: "All entities in scope" },
+              { value: "matching", label: "Only the counted entities" },
+            ],
+          },
+        },
+      },
     ],
   },
 ];
 
 const LABELS = {
   areas: "Areas (empty = whole home)",
-  show_name: "Show name next to the count",
+  layout: "Chip layout",
+  show_state_text: "Show the state word after the count",
   show_area_name: "Append the area name",
+  exclude_redundant_groups: "Skip groups whose members are all counted",
   include_hidden: "Include hidden entities",
   include_diagnostic: "Include diagnostic/config entities",
   tap_action: "Tap action",
@@ -850,11 +1395,12 @@ const LABELS = {
   domain: "Domain",
   device_class: "Device class (door, window, motion, ...)",
   labels: "Labels",
-  name: "Name",
-  icon: "Icon",
+  name: "Name (empty = translated domain / device class)",
+  icon: "Icon (empty = entity icon)",
   color: "Colour",
   mode: "Count",
   hide_when_zero: "Hide when zero",
+  list_scope: "Entity list shows",
 };
 
 class AreaDomainChipsEditor extends HTMLElement {
@@ -917,6 +1463,13 @@ class AreaDomainChipsEditor extends HTMLElement {
     return b;
   }
 
+  _chipTitle(chip, i) {
+    if (chip.name) return chip.name;
+    if (chip.device_class && this._hass) return deviceClassName(this._hass, chip.domain || "sensor", chip.device_class);
+    if (chip.domain && this._hass) return domainName(this._hass, chip.domain);
+    return chip.device_class || chip.domain || `Chip ${i + 1}`;
+  }
+
   _render() {
     const root = this.shadowRoot;
     root.innerHTML = "";
@@ -971,8 +1524,10 @@ class AreaDomainChipsEditor extends HTMLElement {
       this._makeForm(
         {
           areas: this._config.areas || [],
-          show_name: !!this._config.show_name,
+          layout: this._config.layout || "stacked",
+          show_state_text: this._config.show_state_text !== false,
           show_area_name: !!this._config.show_area_name,
+          exclude_redundant_groups: this._config.exclude_redundant_groups !== false,
           include_hidden: !!this._config.include_hidden,
           include_diagnostic: !!this._config.include_diagnostic,
           tap_action: (this._config.tap_action || { action: "list" }).action,
@@ -981,8 +1536,10 @@ class AreaDomainChipsEditor extends HTMLElement {
         GENERAL_SCHEMA,
         (value) => {
           this._config.areas = value.areas || [];
-          this._config.show_name = value.show_name;
+          this._config.layout = value.layout || "stacked";
+          this._config.show_state_text = value.show_state_text !== false;
           this._config.show_area_name = value.show_area_name;
+          this._config.exclude_redundant_groups = value.exclude_redundant_groups !== false;
           this._config.include_hidden = value.include_hidden;
           this._config.include_diagnostic = value.include_diagnostic;
           this._config.tap_action = { action: value.tap_action || "list" };
@@ -1004,7 +1561,7 @@ class AreaDomainChipsEditor extends HTMLElement {
       const head = document.createElement("div");
       head.className = "chip-head";
       const title = document.createElement("span");
-      title.textContent = chip.name || chip.device_class || chip.domain || `Chip ${i + 1}`;
+      title.textContent = this._chipTitle(chip, i);
       const spacer = document.createElement("span");
       spacer.className = "spacer";
       head.appendChild(title);
@@ -1044,10 +1601,10 @@ class AreaDomainChipsEditor extends HTMLElement {
             areas: chip.areas || [],
             name: chip.name || "",
             icon: chip.icon || "",
-            color: chip.color || "",
+            color: chip.color || "state",
             mode: chip.mode || "active",
             hide_when_zero: chip.hide_when_zero !== false,
-            show_name: !!chip.show_name,
+            list_scope: chip.list_scope || "auto",
           },
           CHIP_SCHEMA,
           (value) => {
@@ -1058,12 +1615,12 @@ class AreaDomainChipsEditor extends HTMLElement {
             if (value.areas && value.areas.length) next.areas = value.areas;
             if (value.name) next.name = value.name;
             if (value.icon) next.icon = value.icon;
-            if (value.color) next.color = value.color;
+            if (value.color && value.color !== "state") next.color = value.color;
             if (value.mode && value.mode !== "active") next.mode = value.mode;
             next.hide_when_zero = value.hide_when_zero !== false;
-            if (value.show_name) next.show_name = true;
+            if (value.list_scope && value.list_scope !== "auto") next.list_scope = value.list_scope;
             this._config.chips[i] = next;
-            title.textContent = next.name || next.device_class || next.domain || `Chip ${i + 1}`;
+            title.textContent = this._chipTitle(next, i);
             this._emit();
           }
         )
@@ -1095,7 +1652,7 @@ class AreaDomainChipsEditor extends HTMLElement {
     );
     addRow.appendChild(
       this._button("+ Add empty chip", () => {
-        this._config.chips.push({ domain: "light", icon: "mdi:lightbulb", color: "amber", hide_when_zero: true });
+        this._config.chips.push({ domain: "light", hide_when_zero: true });
         this._emit();
         this._render();
       })

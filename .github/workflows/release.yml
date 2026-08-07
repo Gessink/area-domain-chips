@@ -12,7 +12,7 @@ jobs:
     name: Attach dashboard resource to release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # HACS downloads `filename` from the release assets when a release exists,
       # so the file has to sit next to the release, not only in dist/.
