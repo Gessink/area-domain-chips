@@ -12,7 +12,7 @@
  * https://github.com/Gessink/area-domain-chips
  */
 
-const VERSION = "1.3.1";
+const VERSION = "1.4.0";
 
 /* ------------------------------------------------------------------ *
  * State helpers
@@ -2026,4 +2026,663 @@ console.info(
   `%c AREA-DOMAIN-CHIPS %c v${VERSION} `,
   "color:#fff;background:#03a9f4;font-weight:700",
   "color:#03a9f4;background:#fff;font-weight:700"
+);
+
+/* ------------------------------------------------------------------ *
+ * Area Section Header
+ * -------------------
+ * A section heading card that looks exactly like the native HA heading
+ * card, but populates from an HA area and embeds area-domain-chips
+ * as inline badges.
+ *
+ * type: custom:area-section-header
+ *
+ * https://github.com/Gessink/area-domain-chips
+ * ------------------------------------------------------------------ */
+
+class AreaSectionHeader extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._config = null;
+    this._hass = null;
+    this._built = false;
+    this._chipsEl = null;
+    this._headingEl = null;
+    this._iconEl = null;
+    this._lastArea = null;
+  }
+
+  static getConfigElement() {
+    return document.createElement("area-section-header-editor");
+  }
+
+  static getStubConfig(hass) {
+    const areas = hass && hass.areas ? Object.keys(hass.areas) : [];
+    return {
+      type: "custom:area-section-header",
+      area: areas.length ? areas[0] : "",
+      chips: [
+        { domain: "light", icon: "mdi:lightbulb", color: "amber", hide_when_zero: true },
+        { domain: "binary_sensor", device_class: "door", icon: "mdi:door-open", color: "red", hide_when_zero: true },
+      ],
+    };
+  }
+
+  // `area` takes a single area id or a list, so a header that covers more than
+  // one HA area (a living room combined with a study, say) still counts chips
+  // across all of them instead of silently narrowing to the first.
+  _areas() {
+    const area = this._config.area;
+    if (Array.isArray(area)) return area;
+    return area ? [area] : [];
+  }
+
+  setConfig(config) {
+    if (!config || typeof config !== "object") throw new Error("Invalid configuration");
+    if (!config.area || (Array.isArray(config.area) && !config.area.length)) {
+      throw new Error("'area' is required");
+    }
+    this._config = Object.assign({}, config);
+    this._built = false;
+    if (this._hass) {
+      this._rebuild();
+      this._update();
+    }
+  }
+
+  getCardSize() { return 1; }
+
+  getGridOptions() {
+    return { columns: "full", rows: "auto", min_columns: 3 };
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._config) return;
+    if (!this._built) this._rebuild();
+    this._update();
+  }
+
+  get hass() { return this._hass; }
+
+  /* -------------------- actions -------------------- */
+
+  _isActionable() {
+    var action = this._config.tap_action;
+    if (!action) return false;
+    return action.action && action.action !== "none";
+  }
+
+  _handleAction() {
+    var action = this._config.tap_action;
+    if (!action) return;
+    if (action.action === "navigate" && action.navigation_path) {
+      history.pushState(null, "", action.navigation_path);
+      window.dispatchEvent(
+        new CustomEvent("location-changed", { bubbles: true, composed: true })
+      );
+    } else if (action.action === "more-info" && action.entity) {
+      this.dispatchEvent(
+        new CustomEvent("hass-more-info", {
+          detail: { entityId: action.entity },
+          bubbles: true,
+          composed: true,
+        })
+      );
+    }
+  }
+
+  /* -------------------- DOM -------------------- */
+
+  _rebuild() {
+    var root = this.shadowRoot;
+    root.innerHTML = "";
+
+    var style = document.createElement("style");
+    style.textContent = HEADER_STYLES;
+    root.appendChild(style);
+
+    // ha-card wrapper (matches native heading card)
+    var card = document.createElement("ha-card");
+    root.appendChild(card);
+
+    var container = document.createElement("div");
+    container.className = "container";
+    card.appendChild(container);
+
+    // Left side: content (icon + heading text + chevron)
+    var content = document.createElement("div");
+    var headingStyle = this._config.heading_style || "title";
+    content.className = "content " + headingStyle;
+
+    var actionable = this._isActionable();
+    if (actionable) {
+      content.setAttribute("role", "button");
+      content.setAttribute("tabindex", "0");
+      content.addEventListener("click", this._handleAction.bind(this));
+      content.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter" || ev.key === " ") {
+          ev.preventDefault();
+          this._handleAction();
+        }
+      }.bind(this));
+    }
+    container.appendChild(content);
+
+    // Icon
+    this._iconEl = document.createElement("ha-icon");
+    this._iconEl.style.display = "none";
+    content.appendChild(this._iconEl);
+
+    // Heading text
+    this._headingEl = document.createElement("p");
+    content.appendChild(this._headingEl);
+
+    // Chevron for actionable heading
+    if (actionable) {
+      var hasIconNext = !!customElements.get("ha-icon-next");
+      if (hasIconNext) {
+        var next = document.createElement("ha-icon-next");
+        content.appendChild(next);
+      } else {
+        var chevron = document.createElement("ha-icon");
+        chevron.icon = "mdi:chevron-right";
+        chevron.className = "chevron";
+        content.appendChild(chevron);
+      }
+    }
+
+    // Right side: badges (area-domain-chips)
+    var chips = this._config.chips;
+    if (chips && chips.length) {
+      var badges = document.createElement("div");
+      badges.className = "badges";
+      container.appendChild(badges);
+
+      this._chipsEl = document.createElement("area-domain-chips");
+      this._chipsEl.setConfig({
+        type: "custom:area-domain-chips",
+        areas: this._areas(),
+        chips: chips,
+        spacing: 6,
+      });
+      badges.appendChild(this._chipsEl);
+    } else {
+      this._chipsEl = null;
+    }
+
+    this._built = true;
+    this._lastArea = null;
+  }
+
+  /* -------------------- update -------------------- */
+
+  _update() {
+    if (!this._hass || !this._config || !this._built) return;
+
+    // With several areas, "the area" for a fallback heading/icon is the
+    // first one; in practice every real header sets its own heading anyway.
+    var areaIds = this._areas();
+    var area = areaIds.length && this._hass.areas ? this._hass.areas[areaIds[0]] : undefined;
+
+    // Only update heading / icon when area info changes.
+    var areaKey = area ? (area.name + "|" + (area.icon || "")) : "";
+    if (areaKey !== this._lastArea) {
+      this._lastArea = areaKey;
+
+      var heading = this._config.heading || (area ? area.name : areaIds[0] || "");
+      if (this._headingEl) this._headingEl.textContent = heading;
+
+      var icon = this._config.icon || (area ? area.icon : undefined);
+      if (this._iconEl) {
+        if (icon) {
+          this._iconEl.icon = icon;
+          this._iconEl.style.display = "";
+        } else {
+          this._iconEl.style.display = "none";
+        }
+      }
+    }
+
+    // Always pass hass to chips so entity states stay current.
+    if (this._chipsEl) {
+      this._chipsEl.hass = this._hass;
+    }
+  }
+
+  disconnectedCallback() {}
+}
+
+/* CSS that replicates the native hui-heading-card styles exactly,
+   with fallbacks for older HA versions that lack design-system tokens. */
+
+const HEADER_STYLES = `
+  :host {
+    display: block;
+  }
+  ha-card {
+    background: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    height: 100%;
+    min-height: 24px;
+  }
+  [role="button"] {
+    cursor: pointer;
+  }
+  ha-icon-next,
+  .chevron {
+    display: inline-block;
+    transition: transform 180ms ease-in-out;
+  }
+  .container {
+    padding: 0 var(--ha-space-1, 4px);
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    flex-wrap: nowrap;
+    align-items: center;
+    overflow: visible;
+    gap: var(--ha-space-2, 8px);
+  }
+  .content:hover ha-icon-next,
+  .content:hover .chevron {
+    transform: translateX(calc(4px * var(--scale-direction, 1)));
+  }
+  .container .content {
+    flex: 0 1 max-content;
+    min-width: 0;
+  }
+  .container .content:not(:only-child) {
+    flex: 1 0 var(--ha-heading-card-title-min-width, 150px);
+    max-width: max-content;
+    min-width: 0;
+  }
+  .content {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--ha-space-2, 8px);
+    color: var(--ha-heading-card-title-color, var(--primary-text-color));
+    font-size: var(--ha-heading-card-title-font-size, var(--ha-font-size-l, 18px));
+    font-weight: var(--ha-heading-card-title-font-weight, var(--ha-font-weight-normal, 400));
+    line-height: var(--ha-heading-card-title-line-height, var(--ha-line-height-normal, 1.5));
+    letter-spacing: 0.1px;
+    --mdc-icon-size: 18px;
+  }
+  .content ha-icon,
+  .content ha-icon-next,
+  .content .chevron {
+    display: flex;
+    flex: none;
+  }
+  .content p {
+    margin: 0;
+    font-style: normal;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+    min-width: 0;
+  }
+  .content.subtitle {
+    color: var(--ha-heading-card-subtitle-color, var(--secondary-text-color));
+    font-size: var(--ha-heading-card-subtitle-font-size, var(--ha-font-size-m, 14px));
+    font-weight: var(--ha-heading-card-subtitle-font-weight, var(--ha-font-weight-medium, 500));
+    line-height: var(--ha-heading-card-subtitle-line-height, var(--ha-line-height-condensed, 1.2));
+  }
+  .badges {
+    display: flex;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: auto;
+    max-width: 100%;
+    scrollbar-width: none;
+  }
+  .badges::-webkit-scrollbar {
+    display: none;
+  }
+  .badges area-domain-chips {
+    display: block;
+  }
+`;
+
+customElements.define("area-section-header", AreaSectionHeader);
+
+/* ------------------------------------------------------------------ *
+ * Area Section Header — editor
+ * ------------------------------------------------------------------ */
+
+const HEADER_SCHEMA = [
+  { name: "area", selector: { area: { multiple: true } } },
+  {
+    name: "",
+    type: "grid",
+    schema: [
+      { name: "heading", selector: { text: {} } },
+      { name: "icon", selector: { icon: {} } },
+    ],
+  },
+  {
+    name: "heading_style",
+    selector: {
+      select: {
+        mode: "dropdown",
+        options: [
+          { value: "title", label: "Title" },
+          { value: "subtitle", label: "Subtitle" },
+        ],
+      },
+    },
+  },
+  {
+    name: "tap_action",
+    selector: {
+      select: {
+        mode: "dropdown",
+        options: [
+          { value: "none", label: "No action" },
+          { value: "navigate", label: "Navigate" },
+          { value: "more-info", label: "More info" },
+        ],
+      },
+    },
+  },
+  { name: "navigation_path", selector: { text: {} } },
+];
+
+Object.assign(LABELS, {
+  area: "Area (one or more)",
+  heading: "Heading (empty = area name)",
+  heading_style: "Heading style",
+  navigation_path: "Navigation path",
+});
+
+// Same per-chip options as the standalone card's editor, minus the `areas`
+// row: a header's chips are always scoped to the header's own area, so a
+// per-chip area override would silently contradict that.
+const HEADER_CHIP_SCHEMA = CHIP_SCHEMA.filter((row) => row.name !== "areas");
+
+class AreaSectionHeaderEditor extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._config = null;
+    this._hass = null;
+    this._forms = [];
+    this._open = [];
+    this._lastEmitted = null;
+  }
+
+  setConfig(config) {
+    const incoming = JSON.stringify(config || {});
+    this._config = JSON.parse(incoming);
+    if (!Array.isArray(this._config.chips)) this._config.chips = [];
+    this._open.length = this._config.chips.length;
+
+    // Home Assistant hands the config back after every edit; skipping the
+    // rebuild there keeps panels open and the focused field focused.
+    if (incoming === this._lastEmitted) return;
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._forms.forEach((f) => (f.hass = hass));
+  }
+
+  _emit() {
+    this._lastEmitted = JSON.stringify(this._config);
+    this.dispatchEvent(
+      new CustomEvent("config-changed", { detail: { config: this._config }, bubbles: true, composed: true })
+    );
+  }
+
+  _makeForm(data, schema, onChange) {
+    const form = document.createElement("ha-form");
+    form.hass = this._hass;
+    form.schema = schema;
+    form.data = data;
+    form.computeLabel = (s) => LABELS[s.name] || s.name;
+    form.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      onChange(ev.detail.value);
+    });
+    this._forms.push(form);
+    return form;
+  }
+
+  _button(label, fn, disabled) {
+    const b = document.createElement("button");
+    b.className = "btn";
+    b.textContent = label;
+    b.disabled = !!disabled;
+    b.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      fn();
+    });
+    return b;
+  }
+
+  _chipTitle(chip, i) {
+    if (chip.name) return chip.name;
+    if (chip.device_class && this._hass) return deviceClassName(this._hass, chip.domain || "sensor", chip.device_class);
+    if (chip.domain && this._hass) return domainName(this._hass, chip.domain);
+    return chip.device_class || chip.domain || `Chip ${i + 1}`;
+  }
+
+  _render() {
+    const root = this.shadowRoot;
+    root.innerHTML = "";
+    this._forms = [];
+
+    const style = document.createElement("style");
+    style.textContent = `
+      :host { display: block; }
+      .section { margin-bottom: 16px; }
+      .chip-box { border: 1px solid var(--divider-color, #e0e0e0); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+      .chip-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-weight: 500; }
+      .chip-head .spacer { flex: 1; }
+      .btn {
+        border: 1px solid var(--divider-color, #e0e0e0);
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color);
+        border-radius: 6px;
+        padding: 4px 8px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .btn:hover:not(:disabled) { background: var(--secondary-background-color, rgba(0, 0, 0, 0.05)); }
+      .btn:disabled { opacity: 0.4; cursor: default; }
+      ha-expansion-panel { display: block; margin-bottom: 8px; --expansion-panel-content-padding: 12px; }
+      .panel-icons { display: flex; align-items: center; gap: 4px; padding-right: 8px; }
+      .add-row { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+      h4 { margin: 16px 0 8px; }
+    `;
+    root.appendChild(style);
+
+    const cfg = this._config;
+    const action = (cfg.tap_action || {}).action || "none";
+
+    const general = document.createElement("div");
+    general.className = "section";
+    general.appendChild(
+      this._makeForm(
+        {
+          area: asArray(cfg.area),
+          heading: cfg.heading || "",
+          icon: cfg.icon || "",
+          heading_style: cfg.heading_style || "title",
+          tap_action: action,
+          navigation_path: (cfg.tap_action || {}).navigation_path || "",
+        },
+        HEADER_SCHEMA,
+        (value) => {
+          const areas = value.area || [];
+          cfg.area = areas.length === 1 ? areas[0] : areas;
+          if (value.heading) cfg.heading = value.heading;
+          else delete cfg.heading;
+          if (value.icon) cfg.icon = value.icon;
+          else delete cfg.icon;
+          if (value.heading_style && value.heading_style !== "title") cfg.heading_style = value.heading_style;
+          else delete cfg.heading_style;
+
+          if (value.tap_action === "navigate") {
+            cfg.tap_action = { action: "navigate", navigation_path: value.navigation_path || "" };
+          } else if (value.tap_action === "more-info") {
+            cfg.tap_action = { action: "more-info" };
+          } else {
+            delete cfg.tap_action;
+          }
+          this._emit();
+          // navigation_path only makes sense once "navigate" is picked.
+          if (value.tap_action !== action) this._render();
+        }
+      )
+    );
+    root.appendChild(general);
+
+    const heading = document.createElement("h4");
+    heading.textContent = "Chips";
+    root.appendChild(heading);
+
+    const usePanel = !!customElements.get("ha-expansion-panel");
+
+    cfg.chips.forEach((chip, i) => {
+      const title = this._chipTitle(chip, i);
+      const buttons = [
+        this._button("↑", () => {
+          const c = cfg.chips;
+          [c[i - 1], c[i]] = [c[i], c[i - 1]];
+          [this._open[i - 1], this._open[i]] = [this._open[i], this._open[i - 1]];
+          this._emit();
+          this._render();
+        }, i === 0),
+        this._button("↓", () => {
+          const c = cfg.chips;
+          [c[i + 1], c[i]] = [c[i], c[i + 1]];
+          [this._open[i + 1], this._open[i]] = [this._open[i], this._open[i + 1]];
+          this._emit();
+          this._render();
+        }, i === cfg.chips.length - 1),
+        this._button("✕", () => {
+          cfg.chips.splice(i, 1);
+          this._open.splice(i, 1);
+          this._emit();
+          this._render();
+        }),
+      ];
+
+      let box;
+      let titleEl;
+      if (usePanel) {
+        box = document.createElement("ha-expansion-panel");
+        box.outlined = true;
+        box.header = title;
+        box.expanded = !!this._open[i];
+        box.addEventListener("expanded-changed", (ev) => {
+          this._open[i] = !!ev.detail.expanded;
+        });
+        const icons = document.createElement("div");
+        icons.slot = "icons";
+        icons.className = "panel-icons";
+        buttons.forEach((b) => {
+          b.addEventListener("click", (ev) => ev.stopPropagation());
+          icons.appendChild(b);
+        });
+        box.appendChild(icons);
+        titleEl = { set textContent(value) { box.header = value; } };
+      } else {
+        box = document.createElement("div");
+        box.className = "chip-box";
+        const head = document.createElement("div");
+        head.className = "chip-head";
+        titleEl = document.createElement("span");
+        titleEl.textContent = title;
+        const spacer = document.createElement("span");
+        spacer.className = "spacer";
+        head.appendChild(titleEl);
+        head.appendChild(spacer);
+        buttons.forEach((b) => head.appendChild(b));
+        box.appendChild(head);
+      }
+
+      box.appendChild(
+        this._makeForm(
+          {
+            domain: chip.domain || "",
+            device_class: chip.device_class || "",
+            labels: chip.labels || (chip.label ? [chip.label] : []),
+            exclude_keywords: chip.exclude_keywords || [],
+            name: chip.name || "",
+            icon: chip.icon || "",
+            color: chip.color || "state",
+            mode: chip.mode || "active",
+            hide_when_zero: chip.hide_when_zero !== false,
+            use_action: chip.use_action !== false,
+            list_scope: chip.list_scope || "auto",
+          },
+          HEADER_CHIP_SCHEMA,
+          (value) => {
+            const next = {};
+            if (value.domain) next.domain = value.domain;
+            if (value.device_class) next.device_class = value.device_class;
+            if (value.labels && value.labels.length) next.labels = value.labels;
+            if (value.exclude_keywords && value.exclude_keywords.length) {
+              next.exclude_keywords = value.exclude_keywords;
+            }
+            if (value.name) next.name = value.name;
+            if (value.icon) next.icon = value.icon;
+            if (value.color && value.color !== "state") next.color = value.color;
+            if (value.mode && value.mode !== "active") next.mode = value.mode;
+            next.hide_when_zero = value.hide_when_zero !== false;
+            if (value.use_action === false) next.use_action = false;
+            if (value.list_scope && value.list_scope !== "auto") next.list_scope = value.list_scope;
+            cfg.chips[i] = next;
+            titleEl.textContent = this._chipTitle(next, i);
+            this._emit();
+          }
+        )
+      );
+
+      root.appendChild(box);
+    });
+
+    const addRow = document.createElement("div");
+    addRow.className = "add-row";
+    addRow.appendChild(
+      this._button("+ Add chip", () => {
+        cfg.chips.push({ domain: "light", icon: "mdi:lightbulb", color: "amber", hide_when_zero: true });
+        this._open[cfg.chips.length - 1] = true;
+        this._emit();
+        this._render();
+      })
+    );
+    root.appendChild(addRow);
+  }
+}
+
+customElements.define("area-section-header-editor", AreaSectionHeaderEditor);
+
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: "area-section-header",
+  name: "Area Section Header",
+  description:
+    "A section heading that auto-populates from an area, with domain chips as badges.",
+  preview: false,
+  documentationURL: "https://github.com/Gessink/area-domain-chips",
+});
+
+console.info(
+  `%c AREA-SECTION-HEADER %c v${VERSION} `,
+  "color:#fff;background:#4caf50;font-weight:700",
+  "color:#4caf50;background:#fff;font-weight:700"
 );
