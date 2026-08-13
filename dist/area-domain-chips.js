@@ -12,7 +12,7 @@
  * https://github.com/Gessink/area-domain-chips
  */
 
-const VERSION = "1.4.4";
+const VERSION = "1.5.0";
 
 /* ------------------------------------------------------------------ *
  * State helpers
@@ -2128,6 +2128,23 @@ console.info(
  * https://github.com/Gessink/area-domain-chips
  * ------------------------------------------------------------------ */
 
+// Used whenever `chips` is left out, so a header needs nothing but an `area`
+// to show something useful: lights, doors, windows and motion count down to
+// "0" for as long as that entity type exists in the area (hide_when_zero:
+// false), covers and thermostats only appear while something is actually
+// closed or heating (the ordinary default), and hide_when_absent (also the
+// default) drops any chip whose entity type is not in the area at all -- a
+// room with no thermostat never shows a thermostat chip, whatever the mode.
+const DEFAULT_HEADER_CHIPS = [
+  { domain: "sensor", device_class: "temperature", mode: "value", color: "green" },
+  { domain: "light", icon: "mdi:lightbulb-group-outline", color: "orange", hide_when_zero: false },
+  { domain: "binary_sensor", device_class: "door", icon: "mdi:door-open", color: "red", hide_when_zero: false },
+  { domain: "binary_sensor", device_class: "window", icon: "mdi:window-open-variant", color: "red", hide_when_zero: false },
+  { domain: "binary_sensor", device_class: "motion", icon: "mdi:motion-sensor", color: "orange", hide_when_zero: false },
+  { domain: "cover", mode: "inactive", icon: "mdi:window-shutter", color: "grey" },
+  { domain: "climate", icon: "mdi:thermostat", color: "deep-orange" },
+];
+
 class AreaSectionHeader extends HTMLElement {
   constructor() {
     super();
@@ -2147,13 +2164,12 @@ class AreaSectionHeader extends HTMLElement {
 
   static getStubConfig(hass) {
     const areas = hass && hass.areas ? Object.keys(hass.areas) : [];
+    // No chips shown here: that is the point. Leaving them out gets the
+    // default set below, doors/lights/temperature/etc. already sized to
+    // whatever the area actually has.
     return {
       type: "custom:area-section-header",
       area: areas.length ? areas[0] : "",
-      chips: [
-        { domain: "light", icon: "mdi:lightbulb", color: "amber", hide_when_zero: true },
-        { domain: "binary_sensor", device_class: "door", icon: "mdi:door-open", color: "red", hide_when_zero: true },
-      ],
     };
   }
 
@@ -2300,9 +2316,11 @@ class AreaSectionHeader extends HTMLElement {
       }
     }
 
-    // Right side: badges (area-domain-chips)
-    var chips = this._config.chips;
-    if (chips && chips.length) {
+    // Right side: badges (area-domain-chips). An explicit empty list means
+    // "no chips at all" and is left as-is; leaving the key out entirely gets
+    // the default set.
+    var chips = Array.isArray(this._config.chips) ? this._config.chips : DEFAULT_HEADER_CHIPS;
+    if (chips.length) {
       var badges = document.createElement("div");
       badges.className = "badges";
       container.appendChild(badges);
@@ -2542,7 +2560,11 @@ class AreaSectionHeaderEditor extends HTMLElement {
   setConfig(config) {
     const incoming = JSON.stringify(config || {});
     this._config = JSON.parse(incoming);
-    if (!Array.isArray(this._config.chips)) this._config.chips = [];
+    // Leaving `chips` out gets the card's own default set at render time. Show
+    // that default here too, editable, rather than a blank list.
+    if (!Array.isArray(this._config.chips)) {
+      this._config.chips = JSON.parse(JSON.stringify(DEFAULT_HEADER_CHIPS));
+    }
     this._open.length = this._config.chips.length;
 
     // Home Assistant hands the config back after every edit; skipping the
@@ -2557,9 +2579,23 @@ class AreaSectionHeaderEditor extends HTMLElement {
   }
 
   _emit() {
-    this._lastEmitted = JSON.stringify(this._config);
+    // Whether the working list still matches the default is checked fresh
+    // every time, from its content alone, not remembered: as long as editing
+    // ends up back at exactly the default (nothing changed, or a change and
+    // its undo), the emitted config stays chip-free and keeps tracking future
+    // default updates, rather than freezing whatever happened to be shown
+    // when the editor was first opened. An explicit `chips: []` differs from
+    // the default by construction, so "no chips at all" still comes through.
+    const config = this._config;
+    const stillDefault = JSON.stringify(config.chips) === JSON.stringify(DEFAULT_HEADER_CHIPS);
+    const out = stillDefault ? Object.assign({}, config) : config;
+    if (stillDefault) delete out.chips;
+
+    // Matches what actually goes out, so the "HA echoed this back unchanged"
+    // check in setConfig still recognises it and skips the rebuild.
+    this._lastEmitted = JSON.stringify(out);
     this.dispatchEvent(
-      new CustomEvent("config-changed", { detail: { config: this._config }, bubbles: true, composed: true })
+      new CustomEvent("config-changed", { detail: { config: out }, bubbles: true, composed: true })
     );
   }
 

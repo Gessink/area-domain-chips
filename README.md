@@ -339,7 +339,14 @@ The chips reuse Home Assistant's own badge metrics, so they line up with the sta
 
 ## Area Section Header
 
-`custom:area-section-header` is a `type: heading` card that populates itself from an area and shows Area Domain Chips as its badges, so a room does not need a heading card and a chips card side by side:
+`custom:area-section-header` is a `type: heading` card that populates itself from an area and shows Area Domain Chips as its badges, so a room does not need a heading card and a chips card side by side. Leaving out `chips` gets a sensible default, so this alone is a working header:
+
+```yaml
+type: custom:area-section-header
+area: living_room
+```
+
+That shows temperature (the actual reading), lights, doors, windows and motion (each counting down to "0" for as long as that entity type exists in the area), and covers/thermostats only while something is actually closed or heating — the same list documented under [Card defaults](#card-defaults) below. Add whatever else the room needs, or replace the whole set:
 
 ```yaml
 type: custom:area-section-header
@@ -366,6 +373,26 @@ It matches the native heading card's look exactly — same layout, same CSS vari
 The chips render as Home Assistant's own heading badges do: icon and a bare number, no background, no name, no trailing word — not the pill look a standalone `area-domain-chips` card has. That comes from `native_badges: true`, which the header sets on its embedded chips automatically; there is nothing to configure. Using `area-domain-chips` directly still gets the full pill card, name line included, since that is a deliberately different, standalone design.
 
 Leaving out `heading` or `icon` falls back to the area's own name/icon from the registry. Setting either to `false` forces it off instead, even if the area does have one — for a room whose heading never showed an icon and should not start showing one just because someone later sets an icon on that area in Home Assistant.
+
+### Card defaults
+
+Without `chips`, the header shows:
+
+| Domain / device class | Mode | Hidden when |
+| --- | --- | --- |
+| `sensor` / `temperature` | value, its actual reading | no temperature sensor in the area |
+| `light` | count, counts down to `0` | no light in the area |
+| `binary_sensor` / `door` | count, counts down to `0` | no door sensor in the area |
+| `binary_sensor` / `window` | count, counts down to `0` | no window sensor in the area |
+| `binary_sensor` / `motion` | count, counts down to `0` | no motion sensor in the area, **or** nothing has triggered it |
+| `cover` | count, closed (`mode: inactive`) | no cover in the area, **or** everything is open |
+| `climate` | count, on | no thermostat in the area, **or** none are heating or cooling |
+
+Light, door, window and motion use `hide_when_zero: false`, so they stay visible showing `0` for as long as the room has that kind of sensor at all — see [Showing zero, not nothing](#showing-zero-not-nothing). Cover and climate keep the ordinary default and only appear while something is actually closed or running, since "0 covers closed" on a room with no covers at all would be the only thing ever shown there.
+
+Giving `chips` any value, including an empty list (`chips: []`, meaning no badges at all), replaces this default entirely — there is no way to add one chip to the default set, only to replace it.
+
+The visual editor shows this default set pre-filled and lets you edit it, but nothing is written back to the config until something about it actually changes: opening the editor and only touching, say, the heading, leaves `chips` out of the saved config, so the room keeps tracking the card's default rather than freezing whatever it happened to be that day.
 
 ### Navigating without hardcoding the dashboard
 
