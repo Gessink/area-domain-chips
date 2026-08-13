@@ -136,7 +136,8 @@ views:
 | `name` | string | translated | Empty means the translated device class name, or the domain name. |
 | `icon` | string | entity icon | Empty means the icon of the first matching entity. |
 | `color` | string | `state` | See [Colours](#colours). |
-| `hide_when_zero` | boolean | `true` | Hide the chip when the count is zero. |
+| `hide_when_zero` | boolean | `true` | Hide the chip when nothing currently matches. |
+| `hide_when_absent` | boolean | `true` | Hide the chip when the entity type does not exist in scope at all, regardless of `hide_when_zero`. |
 | `layout` | string | inherits | Override the top-level `layout` for this chip. |
 | `show_state_text` | boolean | inherits | Override the top-level setting for this chip. |
 | `pluralize` | boolean | inherits | Override the top-level setting for this chip. |
@@ -149,6 +150,22 @@ views:
 | `bulk_actions` | string | inherits | Override the top-level setting for this chip. |
 
 If every chip is hidden, the whole element hides itself, so it leaves no empty gap in the badge row.
+
+### Showing zero, not nothing
+
+`hide_when_zero` and `hide_when_absent` answer two different questions, and can be set independently:
+
+- `hide_when_absent` (default `true`): is the entity type even here? A room with no door sensor never shows a door chip, whatever `hide_when_zero` says.
+- `hide_when_zero` (default `true`): is anything currently matching? A room with a door sensor that happens to be closed shows nothing by default.
+
+Set `hide_when_zero: false` to keep the chip visible whenever the entity type is present, counting down to `0` instead of disappearing:
+
+```yaml
+- domain: binary_sensor
+  device_class: door
+  hide_when_zero: false
+# -> "0 open" once every door in scope is closed, gone entirely in a room with no door sensor
+```
 
 ### Naming
 
@@ -345,6 +362,8 @@ chips:
 ```
 
 It matches the native heading card's look exactly — same layout, same CSS variables, with fallbacks so it still looks right on older Home Assistant that has not defined the newer design-system tokens. `area` accepts a list when a header covers more than one HA area; the chips then count across all of them, same as passing that list to `areas:` on a standalone chips card. Every per-chip option documented above works here too, except a chip's own `areas` override, which the header does not offer: its chips are always scoped to the header's own area, so an override would silently fight that.
+
+The chips render as Home Assistant's own heading badges do: icon and a bare number, no background, no name, no trailing word — not the pill look a standalone `area-domain-chips` card has. That comes from `native_badges: true`, which the header sets on its embedded chips automatically; there is nothing to configure. Using `area-domain-chips` directly still gets the full pill card, name line included, since that is a deliberately different, standalone design.
 
 Leaving out `heading` or `icon` falls back to the area's own name/icon from the registry. Setting either to `false` forces it off instead, even if the area does have one — for a room whose heading never showed an icon and should not start showing one just because someone later sets an icon on that area in Home Assistant.
 

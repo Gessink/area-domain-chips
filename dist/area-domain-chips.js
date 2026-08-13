@@ -12,7 +12,7 @@
  * https://github.com/Gessink/area-domain-chips
  */
 
-const VERSION = "1.4.2";
+const VERSION = "1.4.3";
 
 /* ------------------------------------------------------------------ *
  * State helpers
@@ -797,7 +797,8 @@ class AreaDomainChips extends HTMLElement {
 
     const wrap = document.createElement("div");
     wrap.className = "wrap";
-    wrap.style.setProperty("--adc-gap", `${this._config.spacing}px`);
+    if (this._config.native_badges) wrap.classList.add("native");
+    if (this._config.spacing !== undefined) wrap.style.setProperty("--adc-gap", `${this._config.spacing}px`);
     root.appendChild(wrap);
     this._wrap = wrap;
 
@@ -1263,7 +1264,11 @@ class AreaDomainChips extends HTMLElement {
     const values = chips
       .map((chip, i) => (chip.mode === "value" ? this._chipValueText(chip, i) : ""))
       .join(",");
-    const key = `${hass.language}|${counts.join(",")}|${matched.map((m) => m[0] || "").join(",")}|${values}`;
+    // Candidate counts, not just matched/active ones, so a chip that shows
+    // "0" whenever the entity type exists (hide_when_zero: false) redraws the
+    // moment a door sensor is added or removed, not only when one opens.
+    const candidateCounts = chips.map((_, i) => this._candidates(i).length).join(",");
+    const key = `${hass.language}|${counts.join(",")}|${candidateCounts}|${matched.map((m) => m[0] || "").join(",")}|${values}`;
     if (this._lastRender === key) return;
     this._lastRender = key;
 
@@ -1276,8 +1281,16 @@ class AreaDomainChips extends HTMLElement {
       if (!parts) continue;
 
       const count = counts[i];
+      // Two independent reasons to hide: the entity type does not exist here
+      // at all (hide_when_absent, default true), or it exists but nothing
+      // matches right now (hide_when_zero, default true). Turning off
+      // hide_when_zero alone keeps a chip visible showing "0" for as long as
+      // the entity type is actually present, and lets it disappear only when
+      // it genuinely is not.
+      const hideWhenAbsent = chip.hide_when_absent !== false;
       const hideWhenZero = chip.hide_when_zero !== false;
-      const hidden = count === 0 && hideWhenZero;
+      const absent = this._candidates(i).length === 0;
+      const hidden = (absent && hideWhenAbsent) || (count === 0 && hideWhenZero);
 
       parts.el.classList.toggle("hidden", hidden);
       if (hidden) continue;
@@ -1303,13 +1316,18 @@ class AreaDomainChips extends HTMLElement {
         // own value, not as "1 sensor".
         countText = this._chipValueText(chip, i);
       } else {
-        const showState = chip.show_state_text !== undefined
-          ? chip.show_state_text
-          : this._config.show_state_text;
+        // A native badge shows the bare number, exactly like Home Assistant's
+        // own heading badges: no trailing word, no name, on the icon alone.
+        const showState = this._config.native_badges
+          ? false
+          : chip.show_state_text !== undefined
+            ? chip.show_state_text
+            : this._config.show_state_text;
         const word = showState ? this._chipStateWord(chip) : "";
         countText = word ? `${count} ${word}` : String(count);
       }
-      const chipLayout = chip.layout || layout;
+      // A native badge never carries a name label, whatever layout says.
+      const chipLayout = this._config.native_badges ? "count" : chip.layout || layout;
 
       if (chipLayout === "count") {
         parts.nameEl.textContent = "";
@@ -1404,6 +1422,28 @@ const STYLES = `
   }
   .name:empty { display: none; }
   .hidden { display: none !important; }
+
+  /* Native badge mode: matches Home Assistant's own ha-heading-badge exactly
+     (no background, no border, no name line) rather than the pill look, for
+     when the chips sit inside a heading row instead of standing alone. */
+  .wrap.native { gap: var(--adc-gap, var(--ha-space-2, 8px)); }
+  .wrap.native .chip {
+    height: auto;
+    padding: 0;
+    gap: 3px;
+    border: none;
+    background: none;
+    box-shadow: none;
+    border-radius: 0;
+    color: var(--ha-heading-badge-text-color, var(--secondary-text-color));
+    font-size: var(--ha-heading-badge-font-size, var(--ha-font-size-m, 14px));
+    font-weight: var(--ha-heading-badge-font-weight, 400);
+    line-height: var(--ha-heading-badge-line-height, 20px);
+  }
+  .wrap.native .icon { width: auto; height: auto; background: none; margin-left: 0; }
+  .wrap.native ha-icon, .wrap.native ha-state-icon { --mdc-icon-size: 16px; }
+  .wrap.native .name { display: none; }
+  .wrap.native .value { font: inherit; color: inherit; }
 
   /* entity list dialog */
   .scrim {
@@ -1662,6 +1702,13 @@ const CHIP_SCHEMA = [
     type: "grid",
     schema: [
       { name: "hide_when_zero", selector: { boolean: {} } },
+      { name: "hide_when_absent", selector: { boolean: {} } },
+    ],
+  },
+  {
+    name: "",
+    type: "grid",
+    schema: [
       { name: "use_action", selector: { boolean: {} } },
     ],
   },
@@ -1710,7 +1757,8 @@ const LABELS = {
   icon: "Icon (empty = entity icon)",
   color: "Colour",
   mode: "Count",
-  hide_when_zero: "Hide when zero",
+  hide_when_zero: "Hide when nothing matches right now",
+  hide_when_absent: "Hide when the entity type does not exist here at all",
   use_action: "Climate: count only while actually heating or cooling",
   list_scope: "Entity list shows",
 };
@@ -1976,6 +2024,7 @@ class AreaDomainChipsEditor extends HTMLElement {
             color: chip.color || "state",
             mode: chip.mode || "active",
             hide_when_zero: chip.hide_when_zero !== false,
+            hide_when_absent: chip.hide_when_absent !== false,
             use_action: chip.use_action !== false,
             list_scope: chip.list_scope || "auto",
           },
@@ -1994,6 +2043,7 @@ class AreaDomainChipsEditor extends HTMLElement {
             if (value.color && value.color !== "state") next.color = value.color;
             if (value.mode && value.mode !== "active") next.mode = value.mode;
             next.hide_when_zero = value.hide_when_zero !== false;
+            next.hide_when_absent = value.hide_when_absent !== false;
             if (value.use_action === false) next.use_action = false;
             if (value.list_scope && value.list_scope !== "auto") next.list_scope = value.list_scope;
             this._config.chips[i] = next;
@@ -2243,7 +2293,11 @@ class AreaSectionHeader extends HTMLElement {
         type: "custom:area-domain-chips",
         areas: this._areas(),
         chips: chips,
-        spacing: 6,
+        spacing: 8,
+        // A header's badges always look like Home Assistant's own heading
+        // badges: icon and a number, nothing else. The pill/name look is for
+        // area-domain-chips used on its own.
+        native_badges: true,
       });
       badges.appendChild(this._chipsEl);
     } else {
@@ -2671,6 +2725,7 @@ class AreaSectionHeaderEditor extends HTMLElement {
             color: chip.color || "state",
             mode: chip.mode || "active",
             hide_when_zero: chip.hide_when_zero !== false,
+            hide_when_absent: chip.hide_when_absent !== false,
             use_action: chip.use_action !== false,
             list_scope: chip.list_scope || "auto",
           },
@@ -2688,6 +2743,7 @@ class AreaSectionHeaderEditor extends HTMLElement {
             if (value.color && value.color !== "state") next.color = value.color;
             if (value.mode && value.mode !== "active") next.mode = value.mode;
             next.hide_when_zero = value.hide_when_zero !== false;
+            next.hide_when_absent = value.hide_when_absent !== false;
             if (value.use_action === false) next.use_action = false;
             if (value.list_scope && value.list_scope !== "auto") next.list_scope = value.list_scope;
             cfg.chips[i] = next;
