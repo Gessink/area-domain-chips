@@ -12,7 +12,7 @@
  * https://github.com/Gessink/area-domain-chips
  */
 
-const VERSION = "1.4.0";
+const VERSION = "1.4.1";
 
 /* ------------------------------------------------------------------ *
  * State helpers
@@ -523,8 +523,29 @@ class AreaDomainChips extends HTMLElement {
     else if (chip.mode === "unavailable") return stateName(hass, "", "", "unavailable");
     else return tr(hass, "ui.panel.config.entities.caption") || "Entities";
 
-    const plural = chip.pluralize !== undefined ? chip.pluralize : this._config.pluralize;
+    // A value chip is "the room's temperature", one reading, not a count of
+    // several: default to singular unless the chip insists otherwise.
+    const plural = chip.pluralize !== undefined
+      ? chip.pluralize
+      : chip.mode === "value" ? false : this._config.pluralize;
     return plural ? pluralize(hass, name) : name;
+  }
+
+  // The formatted state of the entity a value chip shows, e.g. "21.5 °C" —
+  // whatever hass.formatEntityState renders for it, unit and precision
+  // included, the same text a tile or entity row would show.
+  _chipValueText(chip, chipIndex) {
+    const entityId = this._matchedEntities(chipIndex)[0];
+    const stateObj = entityId ? this._hass.states[entityId] : undefined;
+    if (!stateObj) return "";
+    if (this._hass.formatEntityState) {
+      try {
+        return this._hass.formatEntityState(stateObj);
+      } catch (err) {
+        /* fall through */
+      }
+    }
+    return stateObj.state;
   }
 
   // The word after the count: "6 open", "3 on", "4 closed".
@@ -722,7 +743,10 @@ class AreaDomainChips extends HTMLElement {
     return this._candidates(chipIndex).filter((id) => {
       const stateObj = hass.states[id];
       if (!stateObj) return false;
-      if (mode === "all") return true;
+      // active/inactive are an on/off idea that does not apply to a continuous
+      // reading: a value chip counts every matching sensor, unfiltered, the
+      // same as `mode: all`.
+      if (mode === "all" || mode === "value") return true;
       if (mode === "unavailable") return isUnavailable(stateObj);
       if (mode === "inactive") return !isUnavailable(stateObj) && !isActive(stateObj, chip);
       return isActive(stateObj, chip);
@@ -1232,8 +1256,14 @@ class AreaDomainChips extends HTMLElement {
     const counts = matched.map((m) => m.length);
 
     // Skip DOM work when nothing changed. The language is part of the key so
-    // switching language re-renders the localised labels.
-    const key = `${hass.language}|${counts.join(",")}|${matched.map((m) => m[0] || "").join(",")}`;
+    // switching language re-renders the localised labels. A value chip's text
+    // IS the entity's live state, unlike a count, which stays the same as long
+    // as the same entities match — so its actual reading has to be in the key
+    // too, or a temperature that ticks from 21.4 to 21.5 would never redraw.
+    const values = chips
+      .map((chip, i) => (chip.mode === "value" ? this._chipValueText(chip, i) : ""))
+      .join(",");
+    const key = `${hass.language}|${counts.join(",")}|${matched.map((m) => m[0] || "").join(",")}|${values}`;
     if (this._lastRender === key) return;
     this._lastRender = key;
 
@@ -1267,11 +1297,18 @@ class AreaDomainChips extends HTMLElement {
       }
 
       const name = this._chipName(chip) + this._areaSuffix();
-      const showState = chip.show_state_text !== undefined
-        ? chip.show_state_text
-        : this._config.show_state_text;
-      const word = showState ? this._chipStateWord(chip) : "";
-      const countText = word ? `${count} ${word}` : String(count);
+      let countText;
+      if (chip.mode === "value") {
+        // Not a count at all: the room's one temperature sensor reads as its
+        // own value, not as "1 sensor".
+        countText = this._chipValueText(chip, i);
+      } else {
+        const showState = chip.show_state_text !== undefined
+          ? chip.show_state_text
+          : this._config.show_state_text;
+        const word = showState ? this._chipStateWord(chip) : "";
+        countText = word ? `${count} ${word}` : String(count);
+      }
       const chipLayout = chip.layout || layout;
 
       if (chipLayout === "count") {
@@ -1613,6 +1650,7 @@ const CHIP_SCHEMA = [
               { value: "inactive", label: "Inactive (closed, off, locked, ...)" },
               { value: "unavailable", label: "Unavailable" },
               { value: "all", label: "All" },
+              { value: "value", label: "Show the reading (temperature, humidity, ...)" },
             ],
           },
         },

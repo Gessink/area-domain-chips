@@ -141,7 +141,7 @@ views:
 | `show_state_text` | boolean | inherits | Override the top-level setting for this chip. |
 | `pluralize` | boolean | inherits | Override the top-level setting for this chip. |
 | `state_text` | string | translated | Force the word after the count. |
-| `mode` | `active` \| `inactive` \| `unavailable` \| `all` | `active` | What to count. |
+| `mode` | `active` \| `inactive` \| `unavailable` \| `all` \| `value` | `active` | What to count, or `value` to show a live reading instead of a count. See [Showing a value instead of a count](#showing-a-value-instead-of-a-count). |
 | `use_action` | boolean | `true` | For `climate` and `humidifier`, count on `hvac_action` / `action` rather than the mode. See [Active-state detection](#active-state-detection). |
 | `active_states` | list | per domain | Override which states count as active. The first entry is also the word shown after the count. |
 | `inactive_states` | list | – | Inverse of `active_states`: everything else counts as active. |
@@ -162,7 +162,20 @@ With no `name`, a chip asks Home Assistant for the translation, so the same conf
 | `domain: cover`, `mode: inactive` | Covers / 4 closed | Rolluiken / 4 gesloten |
 | `domain: vacuum` | Vacuums / 1 cleaning | Stofzuigers / 1 bezig met stofzuigen |
 
-Home Assistant only ships singular names, so the plural is added here. English follows the regular rules. Dutch is too irregular for that, so the words Home Assistant actually produces for domains and device classes are held in a list; anything not in it stays singular. Every other language stays singular as well. Set `pluralize: false` to switch it off, or give the chip a `name` to decide for yourself. Corrections and additions to the Dutch list are welcome.
+Home Assistant only ships singular names, so the plural is added here. English follows the regular rules. Dutch is too irregular for that, so the words Home Assistant actually produces for domains and device classes are held in a list; anything not in it stays singular. Every other language stays singular as well. Set `pluralize: false` to switch it off, or give the chip a `name` to decide for yourself. Corrections and additions to the Dutch list are welcome. `mode: value` (below) defaults to singular instead, since it is one reading, not several.
+
+### Showing a value instead of a count
+
+A count makes no sense for a continuous reading: "1 temperature sensor" says nothing a number would. `mode: value` shows the entity's own state instead, formatted with its unit exactly like a tile or entity row would show it:
+
+```yaml
+- domain: sensor
+  device_class: temperature
+  mode: value
+# -> Temperatuur / 21.4 °C
+```
+
+With more than one matching entity, the first one's reading is shown; `mode: value` is meant for a chip that resolves to a single sensor, which an area-scoped chip usually does. `hide_when_zero` still hides the chip when nothing matches, based on whether an entity was found, never on the reading itself, so a temperature of 0°C is not mistaken for "nothing here."
 
 ### Keyword filtering
 
@@ -306,6 +319,32 @@ The chips reuse Home Assistant's own badge metrics, so they line up with the sta
 - Home Assistant renders one element per entry in `badges:`, so a single Area Domain Chips entry renders the whole row of chips inside that one slot.
 - Requires Home Assistant 2024.8 or newer for the badge region and the `ui_color` picker. As a card it works on slightly older versions too.
 - Label filtering needs the entity/device/area registry in the frontend, which Home Assistant exposes from 2024.4 onwards.
+
+## Area Section Header
+
+`custom:area-section-header` is a `type: heading` card that populates itself from an area and shows Area Domain Chips as its badges, so a room does not need a heading card and a chips card side by side:
+
+```yaml
+type: custom:area-section-header
+area: living_room          # a single area id, or a list for a combined header
+heading: Woonkamer          # optional, defaults to the area's name
+icon: mdi:sofa               # optional, defaults to the area's own icon
+tap_action:
+  action: navigate
+  navigation_path: /dashboard-mobile/detail-woonkamer
+chips:
+  - domain: light
+    icon: mdi:lightbulb-group-outline
+    color: orange
+    hide_when_zero: true
+  - domain: binary_sensor
+    device_class: door
+    icon: mdi:door-open
+    color: red
+    hide_when_zero: true
+```
+
+It matches the native heading card's look exactly — same layout, same CSS variables, with fallbacks so it still looks right on older Home Assistant that has not defined the newer design-system tokens. `area` accepts a list when a header covers more than one HA area; the chips then count across all of them, same as passing that list to `areas:` on a standalone chips card. Every per-chip option documented above works here too, except a chip's own `areas` override, which the header does not offer: its chips are always scoped to the header's own area, so an override would silently fight that.
 
 ## License
 
