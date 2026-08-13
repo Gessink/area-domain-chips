@@ -12,7 +12,7 @@
  * https://github.com/Gessink/area-domain-chips
  */
 
-const VERSION = "1.4.1";
+const VERSION = "1.4.2";
 
 /* ------------------------------------------------------------------ *
  * State helpers
@@ -2269,10 +2269,17 @@ class AreaSectionHeader extends HTMLElement {
     if (areaKey !== this._lastArea) {
       this._lastArea = areaKey;
 
-      var heading = this._config.heading || (area ? area.name : areaIds[0] || "");
+      // `heading: false` / `icon: false` force that element off, overriding
+      // even the area's own name/icon — distinct from just omitting the key,
+      // which falls back to the area registry.
+      var heading = this._config.heading === false
+        ? ""
+        : this._config.heading || (area ? area.name : areaIds[0] || "");
       if (this._headingEl) this._headingEl.textContent = heading;
 
-      var icon = this._config.icon || (area ? area.icon : undefined);
+      var icon = this._config.icon === false
+        ? undefined
+        : this._config.icon || (area ? area.icon : undefined);
       if (this._iconEl) {
         if (icon) {
           this._iconEl.icon = icon;

@@ -346,6 +346,8 @@ chips:
 
 It matches the native heading card's look exactly — same layout, same CSS variables, with fallbacks so it still looks right on older Home Assistant that has not defined the newer design-system tokens. `area` accepts a list when a header covers more than one HA area; the chips then count across all of them, same as passing that list to `areas:` on a standalone chips card. Every per-chip option documented above works here too, except a chip's own `areas` override, which the header does not offer: its chips are always scoped to the header's own area, so an override would silently fight that.
 
+Leaving out `heading` or `icon` falls back to the area's own name/icon from the registry. Setting either to `false` forces it off instead, even if the area does have one — for a room whose heading never showed an icon and should not start showing one just because someone later sets an icon on that area in Home Assistant.
+
 ## License
 
 MIT
