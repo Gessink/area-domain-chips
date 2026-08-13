@@ -12,7 +12,7 @@
  * https://github.com/Gessink/area-domain-chips
  */
 
-const VERSION = "1.4.3";
+const VERSION = "1.4.4";
 
 /* ------------------------------------------------------------------ *
  * State helpers
@@ -2202,11 +2202,30 @@ class AreaSectionHeader extends HTMLElement {
     return action.action && action.action !== "none";
   }
 
+  // The root segment of wherever this card currently lives ("/lovelace",
+  // "/dashboard-mobile", ...), read fresh at click time rather than assumed,
+  // so the same config keeps working when the card is copied to a dashboard
+  // with a different URL.
+  _currentDashboardPath() {
+    var parts = window.location.pathname.split("/").filter(Boolean);
+    return parts.length ? "/" + parts[0] : "";
+  }
+
   _handleAction() {
     var action = this._config.tap_action;
     if (!action) return;
     if (action.action === "navigate" && action.navigation_path) {
-      history.pushState(null, "", action.navigation_path);
+      // A path with no leading slash is relative to whichever dashboard this
+      // header happens to be on: `detail-woonkamer` becomes
+      // `/dashboard-mobile/detail-woonkamer` here and `/lovelace/detail-
+      // woonkamer` on a dashboard called lovelace, with no per-dashboard
+      // editing. An absolute path (starting with `/`) is used exactly as
+      // given, unchanged from before.
+      var path = action.navigation_path;
+      if (path.charAt(0) !== "/") {
+        path = this._currentDashboardPath() + "/" + path;
+      }
+      history.pushState(null, "", path);
       window.dispatchEvent(
         new CustomEvent("location-changed", { bubbles: true, composed: true })
       );
@@ -2501,7 +2520,7 @@ Object.assign(LABELS, {
   area: "Area (one or more)",
   heading: "Heading (empty = area name)",
   heading_style: "Heading style",
-  navigation_path: "Navigation path",
+  navigation_path: "Navigation path (no leading slash = relative to this dashboard)",
 });
 
 // Same per-chip options as the standalone card's editor, minus the `areas`

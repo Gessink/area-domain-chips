@@ -348,7 +348,7 @@ heading: Woonkamer          # optional, defaults to the area's name
 icon: mdi:sofa               # optional, defaults to the area's own icon
 tap_action:
   action: navigate
-  navigation_path: /dashboard-mobile/detail-woonkamer
+  navigation_path: detail-woonkamer   # no leading slash: see below
 chips:
   - domain: light
     icon: mdi:lightbulb-group-outline
@@ -366,6 +366,12 @@ It matches the native heading card's look exactly — same layout, same CSS vari
 The chips render as Home Assistant's own heading badges do: icon and a bare number, no background, no name, no trailing word — not the pill look a standalone `area-domain-chips` card has. That comes from `native_badges: true`, which the header sets on its embedded chips automatically; there is nothing to configure. Using `area-domain-chips` directly still gets the full pill card, name line included, since that is a deliberately different, standalone design.
 
 Leaving out `heading` or `icon` falls back to the area's own name/icon from the registry. Setting either to `false` forces it off instead, even if the area does have one — for a room whose heading never showed an icon and should not start showing one just because someone later sets an icon on that area in Home Assistant.
+
+### Navigating without hardcoding the dashboard
+
+A `navigation_path` with no leading slash is read as relative to whichever dashboard the header currently lives on, worked out from the URL at the moment it is clicked: `detail-woonkamer` becomes `/lovelace/detail-woonkamer` on a dashboard called `lovelace` and `/dashboard-mobile/detail-woonkamer` on one called `dashboard-mobile`, with the exact same config either way. Copy a room's header to a second dashboard and its navigation keeps working there too, instead of always pointing at wherever it was first written for.
+
+An absolute path (starting with `/`) is used exactly as given, unchanged — for a header that should always jump to one specific dashboard regardless of where it is placed.
 
 ## License
 
